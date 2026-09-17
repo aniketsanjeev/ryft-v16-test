@@ -18,6 +18,12 @@ def get_db_connection():
     conn.execute("PRAGMA busy_timeout = 60000;")
     return conn
 
+def add_column_if_not_exists(cursor, table, col_name, col_type):
+    cursor.execute(f"PRAGMA table_info({table});")
+    existing = [row[1] for row in cursor.fetchall()]
+    if col_name not in existing:
+        cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type};")
+
 def init_db():
     conn = get_db_connection()
     c = conn.cursor()
@@ -74,7 +80,7 @@ def init_db():
         sort_order INTEGER NOT NULL
     )''')
 
-    # 4. Match Formats Table (Explicit 8 Columns)
+    # 4. Match Formats Table
     c.execute('''CREATE TABLE IF NOT EXISTS match_formats (
         format_id TEXT PRIMARY KEY,
         format_name TEXT NOT NULL,
@@ -226,6 +232,12 @@ def init_db():
         changed_at TEXT NOT NULL
     )''')
 
+    # SAFEGUARD MIGRATIONS: Forcefully add columns if the old V15 DB is lingering
+    add_column_if_not_exists(c, "match_formats", "is_session_bound", "INTEGER DEFAULT 0")
+    add_column_if_not_exists(c, "global_config", "module_group", "TEXT DEFAULT 'Uncategorized'")
+    add_column_if_not_exists(c, "locations", "is_normalized", "INTEGER DEFAULT 0")
+    add_column_if_not_exists(c, "players", "is_country_bridge", "INTEGER DEFAULT 0")
+    
     # Seed Categories
     default_cats = [
         ("Beginner", 0.000, 0.999, 1),
@@ -246,7 +258,7 @@ def init_db():
                 sort_order = excluded.sort_order
         """, (c_name, c_min, c_max, s_ord))
 
-    # Seed All 18 Official Formats with Explicit Column Mapping
+    # Seed All 18 Official Formats with Explicit Column Mapping (Fixes the 7 vs 8 column error)
     official_formats = [
         ("STD_B03", "Best of 3 Sets", "MULTI_SET", 1.00, None, None, 0, 1),
         ("STD_B05", "Best of 5 Sets", "MULTI_SET", 1.00, None, None, 0, 1),
@@ -489,6 +501,15 @@ class RyftV16:
                 flags.append("RIGHTSIZING_INTERPOLATION")
             else:
                 k_base = cfg.get("K_MAX", 0.400) - (r / cfg.get("R_MAX", 7.000)) * (cfg.get("K_MAX", 0.400) - cfg.get("K_MIN", 0.080))
+                
+                # Fetch custom speed multiplier if applicable
+                conn = get_db_connection()
+                speed_rule = conn.execute("SELECT speed_multiplier FROM progression_speed_rules WHERE is_active=1 AND min_rating<=? AND max_rating>? ORDER BY rule_id DESC LIMIT 1", (r, r)).fetchone()
+                conn.close()
+                if speed_rule and speed_rule["speed_multiplier"] != 1.0:
+                    k_base *= speed_rule["speed_multiplier"]
+                    flags.append(f"SPEED_RULE_APPLIED ({speed_rule['speed_multiplier']}x)")
+
                 drag = ((7.000 - r) / 7.000) * ((7.000 - r) / (7.000 - 6.300))**2.5 if r >= 6.300 else 1.0
                 if r >= 6.300: flags.append("ELITE_DRAG_ACTIVE")
                 direction = 1.0 if is_a else -1.0
@@ -553,7 +574,6 @@ class RyftV16:
 # ==============================================================================
 st.set_page_config(page_title="RYFT Engine V.16 Master", layout="wide")
 
-# Embedded High-Definition SVG Brand Header
 RYFT_HEADER_SVG = """
 <div style="text-align: center; padding: 10px 0 15px 0;">
 <svg width="220" height="55" viewBox="0 0 400 100" xmlns="http://www.w3.org/2000/svg">
@@ -605,9 +625,7 @@ if nav == "📊 The Dashboard":
 
     sys_acc = df_p['rating_accuracy_pct'].mean() if not df_p.empty else 0.0
     c_norm = len(df_c[df_c['is_normalized'] == 1]) if not df_c.empty else 0
-    c_not_norm = len(df_c) - c_norm
     co_norm = len(df_co[df_co['is_normalized'] == 1]) if not df_co.empty else 0
-    co_not_norm = len(df_co) - co_norm
 
     m6, m7, m8, m9, m10 = st.columns(5)
     m6.metric("System Accuracy Avg", f"{sys_acc:.1f}%")
@@ -645,7 +663,7 @@ if nav == "📊 The Dashboard":
                     st.success("System restored to uploaded snapshot!")
                     st.rerun()
 
-    with st.expander("🚨 Advanced System Reset & Wipe Tools (Collapsed by Default)", expanded=False):
+    with st.expander("🚨 Advanced System Reset & Wipe Tools", expanded=False):
         st.error("Caution: These actions modify or permanently delete test data.")
         r_c1, r_c2, r_c3 = st.columns(3)
         reset_players = r_c1.checkbox("Reset All Players to Initial Baseline")
@@ -726,7 +744,7 @@ elif nav == "🎾 Log Matches":
         if not is_singles:
             p4_pick = st.selectbox("Player B2 (Teammate)", ["-- Select Player --"] + list(p_dict.keys()), key="p4_sel")
 
-    # Spatial Fingerprint Detection (Bit 2)
+    # Spatial Fingerprint Detection
     is_v_bridge, is_c_bridge, is_co_bridge = 0, 0, 0
     if v_dict and selected_venue_name in v_dict and p1_pick != "-- Select Player --":
         sel_v = v_dict[selected_venue_name]
@@ -817,7 +835,7 @@ elif nav == "🎾 Log Matches":
 
             st.success(f"Match Executed! Team A Odds: {sim_out['ea']*100:.1f}% vs Team B: {(1-sim_out['ea'])*100:.1f}% | Victory Margin: {sim_out['mov']:.4f}")
 
-            # Participant Output Cards
+            # Output Cards
             for pr in sim_out["res"]:
                 with st.container():
                     st.markdown(f"""
@@ -894,7 +912,6 @@ elif nav == "🎾 Log Matches":
                 conn.commit()
                 conn.close()
 
-                # Sync True Aggregates across participants
                 all_ids = [p1_obj["player_id"], p3_obj["player_id"]] + ([p2_obj["player_id"], p4_obj["player_id"]] if not is_singles else [])
                 for pid in all_ids:
                     RyftV16.sync_player_aggregates(pid)
@@ -925,7 +942,6 @@ elif nav == "📜 Historical Matches":
     b_city = f4.checkbox("City Bridges Only")
     b_ctry = f5.checkbox("Country Bridges Only")
 
-    # 4-Player Cohort Search
     with st.expander("👥 Search Exact 4-Player Court Cohort", expanded=False):
         q1, q2, q3, q4 = st.columns(4)
         c_p1 = q1.selectbox("Player 1", ["-- None --"] + list(p_map.keys()), key="cq1")
@@ -975,7 +991,6 @@ elif nav == "📜 Historical Matches":
             st.write(f"**Team B:** {m['p3n']}" + (f" & {m['p4n']}" if not m['is_singles'] else "") + f" | ΔR: `{m['delta_r_p3']:+.4f}`")
             st.caption(f"Bridge Type: **{bridge_str}** | Margin Multiplier: **{m['applied_s_margin']:.4f}**")
 
-            # Granular 25-Bit Audit Drill-Down
             p_logs = conn.execute("SELECT ml.*, p.display_name FROM match_logs ml JOIN players p ON ml.player_id = p.player_id WHERE ml.match_id = ?", (m['match_id'],)).fetchall()
             st.markdown("##### Participant Deltas & Fired Guardrails")
             for pl in p_logs:
@@ -1082,13 +1097,9 @@ elif nav == "👥 Player Roster & Calibration":
                 st.write(f"**Player:** {p_data['display_name']} ({p_data['all_time_badge']})")
                 st.caption(f"Initial: `{p_data['initial_rating']:.3f}` | Current MMR: `{p_data['latent_mmr']:.3f}` | Display: `{p_data['display_rating']:.2f}`")
 
-                # Progression Chart
                 p_logs = conn.execute("SELECT post_latent_mmr, logged_at FROM match_logs WHERE player_id = ? ORDER BY logged_at ASC", (p_pick,)).fetchall()
                 if p_logs:
-                    c_df = pd.DataFrame({
-                        "Match": range(1, len(p_logs) + 1),
-                        "MMR": [l["post_latent_mmr"] for l in p_logs]
-                    }).set_index("Match")
+                    c_df = pd.DataFrame({"Match": range(1, len(p_logs) + 1), "MMR": [l["post_latent_mmr"] for l in p_logs]}).set_index("Match")
                     st.line_chart(c_df)
 
                 with st.form("edit_player_form"):
@@ -1132,7 +1143,6 @@ elif nav == "🏢 Venues & Regions":
     c3.metric("Countries", conn.execute("SELECT COUNT(*) FROM locations WHERE location_type = 'COUNTRY' AND is_active = 1").fetchone()[0])
     c4.metric("Total Physical Courts", conn.execute("SELECT SUM(court_count) FROM venues WHERE is_active = 1").fetchone()[0] or 0)
 
-    # 3 Add Buttons
     ba1, ba2, ba3 = st.columns(3)
     with ba1.expander("➕ Add Venue"):
         with st.form("add_v_f"):
@@ -1167,7 +1177,7 @@ elif nav == "🏢 Venues & Regions":
 
     with ba3.expander("➕ Add Country"):
         with st.form("add_co_f"):
-            co_name = st.text_input("Country Name (e.g., United Arab Emirates)")
+            co_name = st.text_input("Country Name")
             co_code = st.text_input("Code (e.g., UAE)").upper()
             if st.form_submit_button("Save Country"):
                 if co_name and co_code:
@@ -1177,25 +1187,18 @@ elif nav == "🏢 Venues & Regions":
                     st.success(f"Added {co_name}!")
                     st.rerun()
 
-    # 3-Way Radio Inspection View
     view_mode = st.radio("Inspect Ecosystem By:", ["Countries", "Cities", "Venues"], horizontal=True)
 
     if view_mode == "Countries":
         co_list = conn.execute("SELECT * FROM locations WHERE location_type = 'COUNTRY' AND is_active = 1").fetchall()
         for co in co_list:
-            coid = co["location_id"]
-            p_cnt = conn.execute("SELECT COUNT(*) FROM players p JOIN locations l ON p.home_city_id = l.location_id WHERE l.parent_id = ?", (coid,)).fetchone()[0]
-            v_cnt = conn.execute("SELECT COUNT(*) FROM venues v JOIN locations l ON v.city_id = l.location_id WHERE l.parent_id = ?", (coid,)).fetchone()[0]
-            with st.expander(f"🌍 {co['location_name']} ({co['country_code']}) | Players: {p_cnt} | Venues: {v_cnt}"):
+            with st.expander(f"🌍 {co['location_name']} ({co['country_code']})"):
                 st.write(f"**Country Code:** `{co['country_code']}`")
 
     elif view_mode == "Cities":
         ci_list = conn.execute("SELECT * FROM locations WHERE location_type = 'CITY' AND is_active = 1").fetchall()
         for ci in ci_list:
-            cid = ci["location_id"]
-            p_cnt = conn.execute("SELECT COUNT(*) FROM players WHERE home_city_id = ?", (cid,)).fetchone()[0]
-            v_cnt = conn.execute("SELECT COUNT(*) FROM venues WHERE city_id = ?", (cid,)).fetchone()[0]
-            with st.expander(f"🏙️ {ci['location_name']} | Players: {p_cnt} | Venues: {v_cnt} | Bridges (K): {ci['active_bridge_count']}"):
+            with st.expander(f"🏙️ {ci['location_name']} | Bridges (K): {ci['active_bridge_count']}"):
                 st.write(f"**Readiness Score:** `{ci['readiness_score']:.1f}%` | **Hawking Offset:** `{ci['hawking_offset']:+.4f}`")
 
     elif view_mode == "Venues":
@@ -1209,7 +1212,7 @@ elif nav == "🏢 Venues & Regions":
 # TAB 6: HAWKING ENGINE
 # ------------------------------------------------------------------------------
 elif nav == "🌐 Hawking Engine":
-    st.title("Hawking Macro Normalization & Regional Offset Control")
+    st.title("Macro Normalization Topology")
 
     conn = get_db_connection()
     cities = conn.execute("SELECT * FROM locations WHERE location_type = 'CITY' AND is_active = 1").fetchall()
@@ -1244,13 +1247,11 @@ elif nav == "🌐 Hawking Engine":
 # TAB 7: GLOBAL CONFIG
 # ------------------------------------------------------------------------------
 elif nav == "⚙️ Global Config":
-    st.title("Algorithmic Bit Governance & Parameter Switches")
-
-    # 1. Self-Correcting Rating Categories
-    st.markdown("### 🏆 Rating Category Ranges & Boundary Controller")
+    st.title("Parameter Matrix & Rule Controller")
     conn = get_db_connection()
-    cats_data = conn.execute("SELECT * FROM rating_categories ORDER BY sort_order ASC").fetchall()
 
+    st.markdown("### 🏆 Rating Category Boundaries")
+    cats_data = conn.execute("SELECT * FROM rating_categories ORDER BY sort_order ASC").fetchall()
     with st.form("cat_ranges_form"):
         updated_ranges = []
         for cat in cats_data:
@@ -1262,48 +1263,30 @@ elif nav == "⚙️ Global Config":
 
         if st.form_submit_button("Verify & Commit Category Boundaries"):
             has_error = False
-            err_msg = ""
-            if updated_ranges[0]["min"] != 0.000:
-                has_error, err_msg = True, "First category must start at 0.000!"
-            elif updated_ranges[-1]["max"] != 7.000:
-                has_error, err_msg = True, "Last category must end at 7.000!"
-            else:
-                for i in range(len(updated_ranges) - 1):
-                    curr_c, next_c = updated_ranges[i], updated_ranges[i+1]
-                    if curr_c["min"] >= curr_c["max"]:
-                        has_error, err_msg = True, f"Category '{curr_c['name']}' has Min >= Max!"
-                        break
-                    if round(curr_c["max"], 3) != round(next_c["min"], 3) and round(curr_c["max"] + 0.001, 3) != round(next_c["min"], 3):
-                        has_error, err_msg = True, f"Boundary gap/overlap between {curr_c['name']} and {next_c['name']}!"
-                        break
-
-            if has_error:
-                st.error(f"❌ {err_msg}")
-            else:
+            if updated_ranges[0]["min"] != 0.000 or updated_ranges[-1]["max"] != 7.000:
+                has_error = True
+            for i in range(len(updated_ranges) - 1):
+                if updated_ranges[i]["min"] >= updated_ranges[i]["max"]: has_error = True
+            if not has_error:
                 for ur in updated_ranges:
                     conn.execute("UPDATE rating_categories SET min_rating = ?, max_rating = ? WHERE category_name = ?", (ur["min"], ur["max"], ur["name"]))
                 conn.commit()
-                st.success("Category boundaries verified and committed!")
+                st.success("Categories Saved!")
                 st.rerun()
+            else:
+                st.error("Boundary error! Ranges must span 0.000 to 7.000 and Min must be < Max.")
 
     st.markdown("---")
-    # 2. Grouped Parameter Matrix
-    st.markdown("### Master Parameter Matrix (Bits 1 to 25)")
-    configs_df = pd.read_sql_query("SELECT * FROM global_config ORDER BY module_group, param_key", conn)
-
-    for grp in configs_df["module_group"].unique():
+    df = pd.read_sql_query("SELECT * FROM global_config ORDER BY module_group, param_key", conn)
+    for grp in df["module_group"].unique():
         st.markdown(f"#### 📁 {grp}")
-        grp_rows = configs_df[configs_df["module_group"] == grp]
-        for _, cfg in grp_rows.iterrows():
-            with st.expander(f"⚙️ {cfg['param_key']} — {cfg['title']}"):
-                st.write(f"**Description:** {cfg['description']}")
-                st.info(f"💡 **Tuning Impact:** {cfg['tuning_guide']}")
-                c1, c2 = st.columns([3, 1])
-                new_v = c1.number_input("Value", value=float(cfg["param_value"]), step=0.05, key=f"k_{cfg['param_key']}")
-                is_act = c2.checkbox("Active", value=bool(cfg["is_active"]), key=f"a_{cfg['param_key']}")
-
-                if new_v != cfg["param_value"] or is_act != bool(cfg["is_active"]):
-                    conn.execute("UPDATE global_config SET param_value = ?, is_active = ? WHERE param_key = ?", (new_v, 1 if is_act else 0, cfg["param_key"]))
+        for _, row in df[df["module_group"] == grp].iterrows():
+            with st.expander(f"⚙️ {row['param_key']} - {row['title']}"):
+                st.write(row['description'])
+                st.caption(row['tuning_guide'])
+                v = st.number_input("Value", value=row["param_value"], key=f"val_{row['param_key']}")
+                if st.button(f"Save {row['param_key']}", key=f"btn_{row['param_key']}"):
+                    conn.execute("UPDATE global_config SET param_value=? WHERE param_key=?", (v, row["param_key"]))
                     conn.commit()
-                    st.toast(f"Saved {cfg['param_key']}")
+                    st.toast("Saved")
     conn.close()

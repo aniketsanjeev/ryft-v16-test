@@ -7,7 +7,7 @@ from datetime import datetime, timezone, date, time
 import pandas as pd
 
 # ==============================================================================
-# 1. DATABASE INITIALIZATION & RELATIONAL SCHEMA (V.16 ARCHITECTURE)
+# 1. DATABASE INITIALIZATION & RELATIONAL SCHEMA (V.16 SPECIFICATION)
 # ==============================================================================
 DB_FILE = "ryft_v16_master.db"
 
@@ -156,7 +156,7 @@ def init_db():
         c.execute("""INSERT INTO rating_categories (category_name, min_rating, max_rating, sort_order) VALUES (?, ?, ?, ?)
                      ON CONFLICT(category_name) DO UPDATE SET min_rating=excluded.min_rating, max_rating=excluded.max_rating, sort_order=excluded.sort_order""", (c_name, c_min, c_max, s_ord))
 
-    # Seed 18 Formats
+    # Seed Formats
     official_formats = [
         ("STD_B03", "Best of 3 Sets", "MULTI_SET", 1.00, None, None, 0, 1),
         ("STD_B05", "Best of 5 Sets", "MULTI_SET", 1.00, None, None, 0, 1),
@@ -185,7 +185,7 @@ def init_db():
     # Master Parameters
     master_params = [
         ("R_MIN", 0.000, 1, "Scale Absolute Floor", "Lowest possible rating.", "Clamps lowest possible rating to 0.000.", "Core Bounds"),
-        ("R_MAX", 7.000, 1, "Scale Absolute Ceiling", "Maximum rating ceiling.", "LOCKED at 7.000.", "Core Bounds"),
+        ("R_MAX", 7.000, 1, "Scale Absolute Ceiling", "Maximum rating ceiling.", "LOCKED at 7.000 to preserve tier definition integrity.", "Core Bounds"),
         ("R_ELITE_THRESHOLD", 6.300, 1, "Elite Drag Gate", "Rating where exponential drag starts.", "Lowering applies drag earlier.", "Core Bounds"),
         ("ELITE_DRAG_EXPONENT", 2.5, 1, "Elite Drag Curvature", "Steepness of ceiling resistance.", "Higher values make 7.000 mathematically unbreachable.", "Core Bounds"),
         ("POWER_MEAN_P", 3.0, 1, "Doubles Cubic Exponent", "Power mean anchor exponent.", "3.0 gives 70/30 anchor bias.", "Engine Volatility"),
@@ -195,8 +195,8 @@ def init_db():
         ("MARGIN_BASE", 0.80, 1, "Margin Floor Factor", "Min score factor for close matches.", "Points floor for tight finishes.", "Margins & Formats"),
         ("MARGIN_SCALE", 0.40, 1, "Margin Blowout Scale", "Max bonus factor for blowouts.", "Full blowout bonus = Base + Scale = 1.20.", "Margins & Formats"),
         ("MAX_PROVISIONAL_DELTA", 0.750, 1, "Placement Ceiling", "Max points won in interpolation.", "Single-match placement cap for unranked smurfs.", "Margins & Formats"),
-        ("PROVISIONAL_ABSORPTION_ALPHA", 0.45, 1, "Rightsizing Velocity", "Speed toward performance rating.", "Higher values accelerate unranked rightsizing.", "Margins & Formats"),
-        ("MAX_24H_EXCHANGE_CAP", 0.150, 1, "24H Casual Cap", "Net transfer ceiling between 4 players.", "Prevents collusion rings from farming points.", "Anti-Farming"),
+        ("PROVISIONAL_ABSORPTION_ALPHA", 0.45, 1, "Rightsizing Velocity", "Speed toward performance rating.", "Higher values accelerate unranked account rightsizing.", "Margins & Formats"),
+        ("MAX_24H_EXCHANGE_CAP", 0.150, 1, "24H Casual Cap", "Net transfer ceiling between 4 players.", "Prevents collusion rings from farming rating points.", "Anti-Farming"),
         ("PROVISIONAL_CAP_MULTIPLIER", 2.5, 1, "Provisional Cap Relaxer", "Multiplier on 24H cap for PRs.", "Allows up to 0.375 point movement for unrated accounts.", "Anti-Farming"),
         ("SESSION_EXCHANGE_CAP", 0.300, 1, "Verified Session Cap", "Cap for verified club events.", "Doubles point limits for verified club mixers (Requires 6+ checked-in).", "Anti-Farming"),
         ("RD_MIN", 30.0, 1, "Certainty Floor", "Absolute uncertainty floor.", "Prevents RD dropping below 30.0.", "Uncertainty & Rust"),
@@ -401,7 +401,7 @@ class RyftV16:
         return {"ta_r": ta_r, "tb_r": tb_r, "ea": ea, "mov": s_margin, "applied_m_c": mc, "res": res}
 
 # ==============================================================================
-# 3. GUI INTERFACE & HEADER
+# 3. GUI INTERFACE & BRAND HEADER
 # ==============================================================================
 st.set_page_config(page_title="RYFT Engine V.16 Master", layout="wide")
 
@@ -468,7 +468,7 @@ if nav == "📊 The Dashboard":
     with st.expander("🚨 Advanced System Resets", expanded=False):
         r_c1, r_c2, r_c3 = st.columns(3)
         res_p = r_c1.checkbox("Reset All Players to Initial Rating")
-        res_m = r_c2.checkbox("Delete Match & Session History")
+        res_m = r_c2.checkbox("Delete Match History")
         res_n = r_c3.checkbox("💣 Clean Slate (Erase All Test Data)")
 
         if st.button("Execute Checked Resets", type="secondary"):
@@ -476,7 +476,7 @@ if nav == "📊 The Dashboard":
             if res_n:
                 for tbl in ["match_logs", "matches", "session_matches", "sessions", "players", "venues", "locations", "progression_speed_rules", "config_changelog", "player_changelog"]:
                     conn.execute(f"DELETE FROM {tbl};")
-                st.warning("Database completely wiped to clean slate.")
+                st.warning("Database completely wiped.")
             else:
                 if res_m:
                     conn.execute("DELETE FROM match_logs;"); conn.execute("DELETE FROM matches;")
@@ -633,7 +633,7 @@ elif nav == "🎾 Log Matches":
                 st.rerun()
 
 # ------------------------------------------------------------------------------
-# TAB 3: CLUB SESSIONS & MIXERS (WITH DYNAMIC QUEUE & REORDERING)
+# TAB 3: CLUB SESSIONS & MIXERS (FIXED: SAFE PICKLE-FREE SWAP TOOL & FLANKED NAMES)
 # ------------------------------------------------------------------------------
 elif nav == "🗓️ Club Sessions & Mixers":
     st.title("Sessions & Event Traffic Controller")
@@ -825,36 +825,38 @@ elif nav == "🗓️ Club Sessions & Mixers":
                                      (json.dumps(updated_checkins), len(updated_checkins), s_id))
                         conn.commit(); st.success("Check-In status locked!"); st.rerun()
 
-            # --- SUB-TAB 2: MATCHES HUB (DYNAMIC DISPATCH & FUNGIBLE SCORING) ---
+            # --- SUB-TAB 2: MATCHES HUB (FIXED: PICKLE-SAFE SWAP TOOL & FLANKED NAMES) ---
             elif sub_tab == "🏟️ Matches Hub":
-                st.subheader("Court Traffic Controller & Fixtures")
+                st.subheader("Court Traffic Schedule")
                 fixtures = conn.execute("SELECT * FROM session_matches WHERE session_id = ? ORDER BY match_order ASC, round_number ASC", (s_id,)).fetchall()
                 fmt_category = s_data["fmt_cat"]
 
-                # Helper to check readiness
                 def check_readiness(m):
                     participants = [p for p in [m['team_a_p1_id'], m['team_a_p2_id'], m['team_b_p1_id'], m['team_b_p2_id']] if p]
                     missing = [p for p in participants if p not in checked_in_ids]
                     return len(missing) == 0, [id_to_name.get(x, x) for x in missing]
 
-                # FUNGIBLE MATCH SWAP / ORDER REASSIGNMENT EXPANDER
+                # FUNGIBLE MATCH SWAP / ORDER REASSIGNMENT EXPANDER (PICKLE-SAFE)
                 with st.expander("🔀 Reorder Schedule / Swap Match Order", expanded=False):
                     st.caption("Change fixture sequence or move any match forward in the queue.")
-                    re1, re2 = st.columns(2)
-                    sched_matches = [m for m in fixtures if m["match_status"] in ("SCHEDULED", "LIVE")]
+                    sched_matches = [dict(m) for m in fixtures if m["match_status"] in ("SCHEDULED", "LIVE")]
                     if len(sched_matches) >= 2:
-                        m_choice_1 = re1.selectbox("Move Match", sched_matches, format_func=lambda x: f"Match #{x['match_order']} ({x['court_id']} R{x['round_number']})", key="sw1")
-                        m_choice_2 = re2.selectbox("Swap Position With", sched_matches, format_func=lambda x: f"Match #{x['match_order']} ({x['court_id']} R{x['round_number']})", key="sw2")
+                        m_lookup = {m["session_match_id"]: m for m in sched_matches}
+                        m_ids = list(m_lookup.keys())
+                        re1, re2 = st.columns(2)
+                        m_id_1 = re1.selectbox("Move Match", options=m_ids, format_func=lambda x: f"Match #{m_lookup[x]['match_order']} ({m_lookup[x]['court_id']} R{m_lookup[x]['round_number']})", key="sw1")
+                        m_id_2 = re2.selectbox("Swap Position With", options=m_ids, format_func=lambda x: f"Match #{m_lookup[x]['match_order']} ({m_lookup[x]['court_id']} R{m_lookup[x]['round_number']})", key="sw2")
                         if st.button("Execute Queue Swap"):
-                            conn.execute("UPDATE session_matches SET match_order=? WHERE session_match_id=?", (m_choice_2["match_order"], m_choice_1["session_match_id"]))
-                            conn.execute("UPDATE session_matches SET match_order=? WHERE session_match_id=?", (m_choice_1["match_order"], m_choice_2["session_match_id"]))
+                            order_1 = m_lookup[m_id_1]["match_order"]
+                            order_2 = m_lookup[m_id_2]["match_order"]
+                            conn.execute("UPDATE session_matches SET match_order=? WHERE session_match_id=?", (order_2, m_id_1))
+                            conn.execute("UPDATE session_matches SET match_order=? WHERE session_match_id=?", (order_1, m_id_2))
                             conn.commit()
                             st.success("Queue reordered successfully!")
                             st.rerun()
                     else:
                         st.info("Need at least 2 active matches to reorder.")
 
-                # Partition into Queue Buckets
                 ready_matches = []
                 waiting_matches = []
                 completed_matches = []
@@ -1157,7 +1159,7 @@ elif nav == "📜 Historical Matches":
     conn.close()
 
 # ------------------------------------------------------------------------------
-# TAB 5: PLAYER ROSTER & CALIBRATION (24-COLUMN ERROR-FREE INSERTS)
+# TAB 5: PLAYER ROSTER & CALIBRATION (24-COLUMN EXPLICIT INSERTS)
 # ------------------------------------------------------------------------------
 elif nav == "👥 Player Roster & Calibration":
     st.title("Players Directory & Calibration Roster")

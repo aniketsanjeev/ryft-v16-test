@@ -61,7 +61,7 @@ def init_db():
         mc_weight REAL NOT NULL, target_games INTEGER, total_points INTEGER, is_session_bound INTEGER DEFAULT 0, is_active INTEGER DEFAULT 1
     )''')
 
-    # 5. Players Table (With Safe Defaults for all Peak and Tracking Fields)
+    # 5. Players Table
     c.execute('''CREATE TABLE IF NOT EXISTS players (
         player_id TEXT PRIMARY KEY, display_name TEXT NOT NULL, initial_rating REAL NOT NULL,
         home_venue_id TEXT, home_city_id TEXT NOT NULL, home_country_code TEXT NOT NULL DEFAULT 'IND',
@@ -75,8 +75,7 @@ def init_db():
         unique_cities_count INTEGER DEFAULT 0, unique_countries_count INTEGER DEFAULT 0, bridge_matches_count INTEGER DEFAULT 0,
         is_active_bridge INTEGER DEFAULT 0, is_country_bridge INTEGER DEFAULT 0, graph_centrality REAL DEFAULT 0.20,
         is_quarantined INTEGER DEFAULT 0, is_anchor INTEGER DEFAULT 0, is_ceiling_anchor INTEGER DEFAULT 0, is_dummy INTEGER DEFAULT 0,
-        last_match_time TEXT, created_at TEXT,
-        FOREIGN KEY (home_venue_id) REFERENCES venues(venue_id) ON DELETE SET NULL,
+        last_match_time TEXT, created_at TEXT, FOREIGN KEY (home_venue_id) REFERENCES venues(venue_id) ON DELETE SET NULL,
         FOREIGN KEY (home_city_id) REFERENCES locations(location_id) ON DELETE CASCADE
     )''')
 
@@ -108,24 +107,24 @@ def init_db():
         match_id TEXT PRIMARY KEY, venue_id TEXT NOT NULL, format_id TEXT NOT NULL, session_id TEXT,
         is_singles INTEGER DEFAULT 0, is_tournament INTEGER DEFAULT 0, is_venue_bridge INTEGER DEFAULT 0,
         is_city_bridge INTEGER DEFAULT 0, is_country_bridge INTEGER DEFAULT 0, team_a_p1_id TEXT NOT NULL, team_a_p2_id TEXT,
-        team_b_p1_id TEXT NOT NULL, team_b_p2_id TEXT, score_team_a INTEGER NOT NULL, score_team_b INTEGER NOT NULL,
-        set_scores_json TEXT NOT NULL, games_winner INTEGER NOT NULL, games_loser INTEGER NOT NULL,
-        pre_rating_a REAL NOT NULL, pre_rating_b REAL NOT NULL, win_expectancy_a REAL NOT NULL,
-        applied_m_c REAL NOT NULL, applied_s_margin REAL NOT NULL, applied_ice_out_p1 REAL DEFAULT 1.00,
+        team_b_p1_id TEXT NOT NULL, team_b_p2_id TEXT, score_team_a INTEGER DEFAULT 0, score_team_b INTEGER DEFAULT 0,
+        set_scores_json TEXT DEFAULT '[]', games_winner INTEGER DEFAULT 0, games_loser INTEGER DEFAULT 0,
+        pre_rating_a REAL DEFAULT 3.000, pre_rating_b REAL DEFAULT 3.000, win_expectancy_a REAL DEFAULT 0.5000,
+        applied_m_c REAL DEFAULT 1.00, applied_s_margin REAL DEFAULT 1.000, applied_ice_out_p1 REAL DEFAULT 1.00,
         applied_ice_out_p2 REAL DEFAULT 1.00, applied_ice_out_p3 REAL DEFAULT 1.00, applied_ice_out_p4 REAL DEFAULT 1.00,
-        applied_g_buffer REAL DEFAULT 1.000, delta_r_p1 REAL NOT NULL, delta_r_p2 REAL DEFAULT 0.0,
-        delta_r_p3 REAL NOT NULL, delta_r_p4 REAL DEFAULT 0.0, guardrails_summary TEXT DEFAULT '[]',
-        match_timestamp TEXT NOT NULL,
+        applied_g_buffer REAL DEFAULT 1.000, delta_r_p1 REAL DEFAULT 0.0, delta_r_p2 REAL DEFAULT 0.0,
+        delta_r_p3 REAL DEFAULT 0.0, delta_r_p4 REAL DEFAULT 0.0, guardrails_summary TEXT DEFAULT '[]',
+        host_id TEXT, sponsor_id TEXT, is_retroactive INTEGER DEFAULT 0, processed_at TEXT, match_timestamp TEXT NOT NULL,
         FOREIGN KEY (venue_id) REFERENCES venues(venue_id) ON DELETE RESTRICT, FOREIGN KEY (format_id) REFERENCES match_formats(format_id) ON DELETE RESTRICT
     )''')
 
-    # 9. Match Logs (Granular Participant Audit)
+    # 9. Match Logs
     c.execute('''CREATE TABLE IF NOT EXISTS match_logs (
         log_id TEXT PRIMARY KEY, match_id TEXT NOT NULL, player_id TEXT NOT NULL, pre_latent_mmr REAL NOT NULL,
         post_latent_mmr REAL NOT NULL, pre_display_rating REAL NOT NULL, post_display_rating REAL NOT NULL,
         pre_rd REAL NOT NULL, post_rd REAL NOT NULL, pre_accuracy_pct REAL NOT NULL, post_accuracy_pct REAL NOT NULL,
         delta_r REAL NOT NULL, is_elevator_active INTEGER DEFAULT 0, guardrails_triggered TEXT DEFAULT '[]',
-        logged_at TEXT NOT NULL, FOREIGN KEY (match_id) REFERENCES matches(match_id) ON DELETE CASCADE,
+        is_retroactive INTEGER DEFAULT 0, logged_at TEXT NOT NULL, FOREIGN KEY (match_id) REFERENCES matches(match_id) ON DELETE CASCADE,
         FOREIGN KEY (player_id) REFERENCES players(player_id) ON DELETE CASCADE
     )''')
 
@@ -135,14 +134,13 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS config_changelog (log_id INTEGER PRIMARY KEY AUTOINCREMENT, param_key TEXT NOT NULL, old_value REAL NOT NULL, new_value REAL NOT NULL, changed_by TEXT NOT NULL, changed_at TEXT NOT NULL)''')
     c.execute('''CREATE TABLE IF NOT EXISTS player_changelog (log_id INTEGER PRIMARY KEY AUTOINCREMENT, player_id TEXT NOT NULL, change_type TEXT NOT NULL, old_val TEXT, new_val TEXT, changed_by TEXT NOT NULL, changed_at TEXT NOT NULL)''')
 
-    # Add Columns if Migrating Old Database
+    # Safe Migrations
+    add_column_if_not_exists(c, "session_matches", "games_winner", "INTEGER DEFAULT 0")
+    add_column_if_not_exists(c, "session_matches", "games_loser", "INTEGER DEFAULT 0")
     add_column_if_not_exists(c, "players", "rolling_90d_peak", "REAL NOT NULL DEFAULT 3.000")
     add_column_if_not_exists(c, "players", "rolling_180d_peak", "REAL NOT NULL DEFAULT 3.000")
     add_column_if_not_exists(c, "players", "rolling_365d_peak", "REAL NOT NULL DEFAULT 3.000")
     add_column_if_not_exists(c, "players", "tournament_floor", "REAL NOT NULL DEFAULT 0.000")
-    add_column_if_not_exists(c, "players", "home_country_code", "TEXT NOT NULL DEFAULT 'IND'")
-    add_column_if_not_exists(c, "locations", "is_normalized", "INTEGER DEFAULT 0")
-    add_column_if_not_exists(c, "players", "is_country_bridge", "INTEGER DEFAULT 0")
 
     # Seed Rating Categories
     default_cats = [
@@ -153,7 +151,7 @@ def init_db():
         c.execute("""INSERT INTO rating_categories (category_name, min_rating, max_rating, sort_order) VALUES (?, ?, ?, ?)
                      ON CONFLICT(category_name) DO UPDATE SET min_rating=excluded.min_rating, max_rating=excluded.max_rating, sort_order=excluded.sort_order""", (c_name, c_min, c_max, s_ord))
 
-    # Seed All 18 Formats
+    # Seed Official Formats
     official_formats = [
         ("STD_B03", "Best of 3 Sets", "MULTI_SET", 1.00, None, None, 0, 1),
         ("STD_B05", "Best of 5 Sets", "MULTI_SET", 1.00, None, None, 0, 1),
@@ -191,22 +189,22 @@ def init_db():
         ("K_MIN", 0.080, 1, "Pro Min Volatility", "Step size at R=7.000.", "Lower values lock pro ratings tighter.", "Engine Volatility"),
         ("MARGIN_BASE", 0.80, 1, "Margin Floor Factor", "Min score factor for close matches.", "Points floor for tight finishes.", "Margins & Formats"),
         ("MARGIN_SCALE", 0.40, 1, "Margin Blowout Scale", "Max bonus factor for blowouts.", "Full blowout bonus = Base + Scale = 1.20.", "Margins & Formats"),
-        ("MAX_PROVISIONAL_DELTA", 0.750, 1, "Placement Ceiling", "Max points won in interpolation.", "Single-match placement cap for unranked smurfs.", "Margins & Formats"),
+        ("MAX_PROVISIONAL_DELTA", 0.750, 1, "Placement Ceiling", "Max points won in interpolation.", "Single-match cap for unranked smurfs.", "Margins & Formats"),
         ("PROVISIONAL_ABSORPTION_ALPHA", 0.45, 1, "Rightsizing Velocity", "Speed toward performance rating.", "Higher values accelerate unranked rightsizing.", "Margins & Formats"),
-        ("MAX_24H_EXCHANGE_CAP", 0.150, 1, "24H Casual Cap", "Net transfer ceiling between 4 players.", "Prevents collusion rings from farming points.", "Anti-Farming"),
+        ("MAX_24H_EXCHANGE_CAP", 0.150, 1, "24H Casual Cap", "Net transfer ceiling between 4 players.", "Prevents collusion rings from farming rating points.", "Anti-Farming"),
         ("PROVISIONAL_CAP_MULTIPLIER", 2.5, 1, "Provisional Cap Relaxer", "Multiplier on 24H cap for PRs.", "Allows up to 0.375 point movement for unrated accounts.", "Anti-Farming"),
         ("SESSION_EXCHANGE_CAP", 0.300, 1, "Verified Session Cap", "Cap for verified club events.", "Doubles point limits for verified club mixers (Requires 6+ checked-in).", "Anti-Farming"),
         ("RD_MIN", 30.0, 1, "Certainty Floor", "Absolute uncertainty floor.", "Prevents RD dropping below 30.0.", "Uncertainty & Rust"),
-        ("RD_MAX", 350.0, 1, "Unrated Starting RD", "Uncertainty assigned at registration.", "Starting baseline uncertainty.", "Uncertainty & Rust"),
+        ("RD_MAX", 350.0, 1, "Unrated Starting RD", "Uncertainty assigned at registration.", "Starting uncertainty.", "Uncertainty & Rust"),
         ("RD_INFO_VARIANCE", 65.0, 1, "Contraction Speed", "Denominator in RD shrinkage.", "Lower values shrink RD faster per match.", "Uncertainty & Rust"),
         ("PROV_RD_SHRINK_MULTIPLIER", 0.35, 1, "Provisional RD Shrink Modifier", "Slows RD drop for unrated players.", "Lower values keep players provisional longer.", "Accuracy & Calibration"),
         ("PROV_ACCURACY_GAIN_MULTIPLIER", 0.40, 1, "Provisional Accuracy Gain Cap", "Restricts accuracy gain during placement.", "Caps visual accuracy progression.", "Accuracy & Calibration"),
-        ("PROVISIONAL_RD_GATE", 100.0, 1, "Tri-Gate Max RD", "RD must be <= 100 to exit [PR].", "Uncertainty ceiling to graduate to Verified.", "Accuracy & Calibration"),
-        ("PROVISIONAL_MIN_MATCHES", 10, 1, "Tri-Gate Min Matches", "Verified matches to exit [PR].", "Match volume required to shed [PR] badge.", "Accuracy & Calibration"),
+        ("PROVISIONAL_RD_GATE", 100.0, 1, "Tri-Gate Max RD", "RD must be <= 100 to exit [PR].", "Uncertainty ceiling to graduate to Verified status.", "Accuracy & Calibration"),
+        ("PROVISIONAL_MIN_MATCHES", 10, 1, "Tri-Gate Min Matches", "Verified matches to exit [PR].", "Minimum verified match volume required to shed [PR] badge.", "Accuracy & Calibration"),
         ("PROVISIONAL_MIN_OPPONENTS", 5, 1, "Tri-Gate Min Opponents", "Unique opponents to exit [PR].", "Distinct opponents required.", "Accuracy & Calibration"),
         ("ISLAND_ACCURACY_CAP", 80.0, 1, "Island Geographic Cap", "Max accuracy if City has 0 bridges.", "Caps accuracy until cross-city play occurs.", "Accuracy & Calibration"),
-        ("INACTIVITY_CONSTANT", 12.0, 1, "Inactivity Rust Rate", "Monthly uncertainty growth.", "Points of RD regained per inactive month.", "Macros"),
-        ("BRIDGE_RD_THRESHOLD", 80.0, 1, "Bridge Max RD", "Max RD to qualify as Bridge.", "Only players with RD <= 80 count.", "Macros"),
+        ("INACTIVITY_CONSTANT", 12.0, 1, "Inactivity Rust Rate", "Monthly uncertainty growth.", "Points of RD regained per inactive month away from the court.", "Macros"),
+        ("BRIDGE_RD_THRESHOLD", 80.0, 1, "Bridge Max RD", "Max RD to qualify as Bridge.", "Only players with RD <= 80 count as travelers.", "Macros"),
         ("LAMBDA_BRIDGE_DAMPING", 3.0, 1, "Tikhonov Lambda", "Shock absorber parameter.", "Higher values require more travelers before city shifts deploy.", "Macros")
     ]
     for k, v, act, tit, desc, tune, grp in master_params:
@@ -451,7 +449,7 @@ if nav == "📊 The Dashboard":
     with st.expander("💾 Database Snapshot Backup & Restore", expanded=True):
         col_b1, col_b2 = st.columns(2)
         with col_b1:
-            st.markdown("#### 📥 Backup Database")
+            st.markdown("#### 📥 Backup Database Snapshot")
             if os.path.exists(DB_FILE):
                 with open(DB_FILE, "rb") as f:
                     st.download_button("⬇️ Download System Snapshot (.db)", f.read(), f"RYFT_V16_Backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db", mime="application/octet-stream", use_container_width=True)
@@ -460,13 +458,13 @@ if nav == "📊 The Dashboard":
             up_db = st.file_uploader("Select .db file", type=["db", "sqlite"])
             if up_db and st.button("🚨 Restore Entire System", type="primary", use_container_width=True):
                 with open(DB_FILE, "wb") as f: f.write(up_db.getbuffer())
-                init_db(); st.success("Restored!"); st.rerun()
+                init_db(); st.success("System Restored!"); st.rerun()
 
     with st.expander("🚨 Advanced System Resets", expanded=False):
         r_c1, r_c2, r_c3 = st.columns(3)
-        res_p = r_c1.checkbox("Reset All Players")
+        res_p = r_c1.checkbox("Reset All Players to Initial Rating")
         res_m = r_c2.checkbox("Delete Match History")
-        res_n = r_c3.checkbox("💣 Nuke Everything")
+        res_n = r_c3.checkbox("💣 Clean Slate (Erase All Test Data)")
 
         if st.button("Execute Resets", type="secondary"):
             conn = get_db_connection()
@@ -567,7 +565,7 @@ elif nav == "🎾 Log Matches":
 
     btn_dry, btn_save = st.columns(2)
     do_dry = btn_dry.button("🔬 Execute Dry Run Simulation", use_container_width=True)
-    do_save = btn_save.button("💾 Commit Match to Database", type="primary", use_container_width=True)
+    do_save = btn_save.button("💾 Commit Match", type="primary", use_container_width=True)
 
     if do_dry or do_save:
         if p1_pick == "-- Select --" or p3_pick == "-- Select --" or (not is_singles and (p2_pick == "-- Select --" or p4_pick == "-- Select --")):
@@ -610,16 +608,14 @@ elif nav == "🎾 Log Matches":
                 ))
 
                 for pr in sim_out["res"]:
-                    conn.execute('''
-                        UPDATE players SET latent_mmr=?, display_rating=?, rating_deviation=?, rating_accuracy_pct=?,
-                        accuracy_s_rd=?, accuracy_s_matches=?, accuracy_s_diversity=?, calibration_tier=?, is_provisional=?, last_match_time=? WHERE player_id=?
-                    ''', (pr["post_r"], pr["post_r"], pr["post_rd"], pr["acc"], pr["a_rd"], pr["a_m"], pr["a_d"], pr["tier"], pr["prov"], ts, pr["pid"]))
+                    conn.execute('''UPDATE players SET latent_mmr=?, display_rating=?, rating_deviation=?, rating_accuracy_pct=?,
+                                    accuracy_s_rd=?, accuracy_s_matches=?, accuracy_s_diversity=?, calibration_tier=?, is_provisional=?, last_match_time=? WHERE player_id=?''',
+                                 (pr["post_r"], pr["post_r"], pr["post_rd"], pr["acc"], pr["a_rd"], pr["a_m"], pr["a_d"], pr["tier"], pr["prov"], ts, pr["pid"]))
                     
-                    conn.execute('''
-                        INSERT INTO match_logs (log_id, match_id, player_id, pre_latent_mmr, post_latent_mmr, pre_display_rating, post_display_rating,
-                        pre_rd, post_rd, pre_accuracy_pct, post_accuracy_pct, delta_r, guardrails_triggered, logged_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (f"LOG_{pr['pid']}_{m_id}", m_id, pr["pid"], pr["pre_r"], pr["post_r"], pr["pre_r"], pr["post_r"], pr["pre_rd"], pr["post_rd"], pr["acc"], pr["acc"], pr["delta"], json.dumps(pr["flags"]), ts))
+                    conn.execute('''INSERT INTO match_logs (log_id, match_id, player_id, pre_latent_mmr, post_latent_mmr, pre_display_rating, post_display_rating,
+                                    pre_rd, post_rd, pre_accuracy_pct, post_accuracy_pct, delta_r, guardrails_triggered, logged_at)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                                 (f"LOG_{pr['pid']}_{m_id}", m_id, pr["pid"], pr["pre_r"], pr["post_r"], pr["pre_r"], pr["post_r"], pr["pre_rd"], pr["post_rd"], pr["acc"], pr["acc"], pr["delta"], json.dumps(pr["flags"]), ts))
 
                 conn.execute("UPDATE venues SET total_matches_played = total_matches_played + 1 WHERE venue_id = ?", (ven_obj["venue_id"],))
                 conn.commit()
@@ -872,7 +868,7 @@ elif nav == "🗓️ Club Sessions & Mixers":
                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             ''', (m_id, s_data["venue_id"], s_data["format_id"], s_id, 1 if is_sing else 0,
                                   p1_d["player_id"], p2_d["player_id"] if p2_d else None, p3_d["player_id"], p4_d["player_id"] if p4_d else None,
-                                  sm["score_team_a"], sm["score_team_b"], max(sm["score_team_a"], sm["score_team_b"]), min(sm["score_team_a"], sm["score_team_b"]),
+                                  sm["score_team_a"], sm["score_team_b"], max(sm["score_team_a"], sm["score_team_b"]), min(sm["score_team_b"], sm["score_team_b"]),
                                   out["ta_r"], out["tb_r"], out["ea"], out["applied_m_c"], out["mov"],
                                   out["res"][0]["delta"], out["res"][2]["delta"] if not is_sing else 0.0,
                                   out["res"][1]["delta"], out["res"][3]["delta"] if not is_sing else 0.0, ts))
@@ -913,9 +909,9 @@ elif nav == "📜 Historical Matches":
     f1, f2, f3 = st.columns(3)
     players = conn.execute("SELECT player_id, display_name FROM players").fetchall()
     p_map = {p["display_name"]: p["player_id"] for p in players}
-    s_player = f1.selectbox("Filter Player", ["All Players"] + list(p_map.keys()))
-    s_venue = f2.selectbox("Filter Venue", ["All Venues"] + [r["venue_name"] for r in conn.execute("SELECT venue_name FROM venues").fetchall()])
-    s_city = f3.selectbox("Filter City", ["All Cities"] + [r["location_name"] for r in conn.execute("SELECT location_name FROM locations WHERE location_type = 'CITY'").fetchall()])
+    s_player = f1.selectbox("Filter by Player", ["All Players"] + list(p_map.keys()))
+    s_venue = f2.selectbox("Filter by Venue", ["All Venues"] + [r["venue_name"] for r in conn.execute("SELECT venue_name FROM venues").fetchall()])
+    s_city = f3.selectbox("Filter by City", ["All Cities"] + [r["location_name"] for r in conn.execute("SELECT location_name FROM locations WHERE location_type = 'CITY'").fetchall()])
 
     sql = """
         SELECT m.*, v.venue_name, l.location_name as city, f.format_name,
@@ -957,7 +953,7 @@ elif nav == "📜 Historical Matches":
     conn.close()
 
 # ------------------------------------------------------------------------------
-# TAB 5: PLAYER ROSTER & CALIBRATION (ERROR-FREE EXPLICIT INSERTS)
+# TAB 5: PLAYER ROSTER & CALIBRATION
 # ------------------------------------------------------------------------------
 elif nav == "👥 Player Roster & Calibration":
     st.title("Players Directory & Calibration Roster")
@@ -1011,7 +1007,6 @@ elif nav == "👥 Player Roster & Calibration":
                         v_id = [v["venue_id"] for v in venues if v["venue_name"] == v_sel][0] if v_sel != "None" else None
                         p_uuid = f"P_{datetime.now().strftime('%d%H%M%S')}"
 
-                        # FULL 24-COLUMN INSERT: Completely immune to NOT NULL constraints
                         conn.execute("""
                             INSERT INTO players (
                                 player_id, display_name, initial_rating, home_venue_id, home_city_id, home_country_code,
@@ -1043,16 +1038,17 @@ elif nav == "👥 Player Roster & Calibration":
                     e_name = st.text_input("Edit Name", value=p_data["display_name"])
                     e_mmr = st.number_input("Latent MMR Override", value=float(p_data["latent_mmr"]), step=0.01, format="%.3f")
                     e_rd = st.number_input("Rating Deviation (RD)", value=float(p_data["rating_deviation"]), step=5.0)
+                    e_prov = st.checkbox("Provisional [PR] Status", value=bool(p_data["is_provisional"]))
                     e_man_ver = st.checkbox("Manually Verified (Override Tri-Gate Demotion)", value=bool(p_data["is_manually_verified"]))
                     e_anc = st.checkbox("System Anchor", value=bool(p_data["is_anchor"]))
                     e_ceil = st.checkbox("Ceiling Anchor", value=bool(p_data["is_ceiling_anchor"]))
 
                     if st.form_submit_button("Save Overrides"):
                         cat_str, _, _ = RyftV16.get_cat_for_rating(e_mmr)
-                        conn.execute("""UPDATE players SET display_name=?, latent_mmr=?, display_rating=?, rating_deviation=?, is_manually_verified=?, is_anchor=?, is_ceiling_anchor=?, all_time_badge=? WHERE player_id=?""",
-                                     (e_name, e_mmr, e_mmr, e_rd, 1 if e_man_ver else 0, 1 if e_anc else 0, 1 if e_ceil else 0, cat_str, p_pick))
+                        conn.execute("""UPDATE players SET display_name=?, latent_mmr=?, display_rating=?, rating_deviation=?, is_provisional=?, is_manually_verified=?, is_anchor=?, is_ceiling_anchor=?, all_time_badge=? WHERE player_id=?""",
+                                     (e_name, e_mmr, e_mmr, e_rd, 0 if e_man_ver else (1 if e_prov else 0), 1 if e_man_ver else 0, 1 if e_anc else 0, 1 if e_ceil else 0, cat_str, p_pick))
                         if e_man_ver:
-                            conn.execute("UPDATE players SET calibration_tier = 'VERIFIED', is_provisional = 0 WHERE player_id = ?", (p_pick,))
+                            conn.execute("UPDATE players SET calibration_tier = 'VERIFIED' WHERE player_id = ? AND calibration_tier = 'PROVISIONAL'", (p_pick,))
                         conn.commit()
                         st.success("Player updated!"); st.rerun()
 
@@ -1066,11 +1062,11 @@ elif nav == "👥 Player Roster & Calibration":
     conn.close()
 
 # ------------------------------------------------------------------------------
-# TAB 6: VENUES & REGIONS (FULL DRILL-DOWNS & OPERATIONAL CRUD RESTORED)
+# TAB 6: VENUES & REGIONS
 # ------------------------------------------------------------------------------
 elif nav == "🏢 Venues & Regions":
     st.title("Geographical Ecosystem & Regional Drill-Downs")
-
+    
     conn = get_db_connection()
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Venues", conn.execute("SELECT COUNT(*) FROM venues WHERE is_active = 1").fetchone()[0])
@@ -1078,7 +1074,6 @@ elif nav == "🏢 Venues & Regions":
     c3.metric("Countries", conn.execute("SELECT COUNT(*) FROM locations WHERE location_type = 'COUNTRY' AND is_active = 1").fetchone()[0])
     c4.metric("Total Physical Courts", conn.execute("SELECT SUM(court_count) FROM venues WHERE is_active = 1").fetchone()[0] or 0)
 
-    # 3 Working Registration Forms
     ba1, ba2, ba3 = st.columns(3)
     with ba1.expander("➕ Add Venue", expanded=False):
         with st.form("add_v_form"):
@@ -1121,7 +1116,6 @@ elif nav == "🏢 Venues & Regions":
                                  (f"LOC_{co_code}", co_name, co_code, datetime.now(timezone.utc).isoformat()))
                     conn.commit(); st.success(f"Added {co_name}!"); st.rerun()
 
-    # 3-Way Radio Inspection View
     view_mode = st.radio("Inspect Hierarchy By:", ["Countries", "Cities", "Venues"], horizontal=True)
 
     if view_mode == "Countries":
@@ -1158,11 +1152,11 @@ elif nav == "🏢 Venues & Regions":
         v_list = conn.execute("SELECT v.*, l.location_name as city FROM venues v JOIN locations l ON v.city_id = l.location_id WHERE v.is_active = 1").fetchall()
         for v in v_list:
             with st.expander(f"🏟️ {v['venue_name']} ({v['city']}) • Courts: {v['court_count']} | Matches: {v['total_matches_played']}"):
-                st.write(f"**Verified Desk Override Authority:** `{'YES' if v['is_verified'] else 'NO'}`")
+                st.write(f"**Verified Club Desk Override Authority:** `{'YES' if v['is_verified'] else 'NO'}`")
     conn.close()
 
 # ------------------------------------------------------------------------------
-# TAB 7: HAWKING ENGINE (MACRO DIFFUSION & OFFSET CONTROLLER RESTORED)
+# TAB 7: HAWKING ENGINE
 # ------------------------------------------------------------------------------
 elif nav == "🌐 Hawking Engine":
     st.title("Hawking Macro Normalization & Regional Diffusion")
@@ -1172,7 +1166,7 @@ elif nav == "🌐 Hawking Engine":
     cities = conn.execute("SELECT * FROM locations WHERE location_type = 'CITY' AND is_active = 1").fetchall()
 
     if not cities:
-        st.info("No cities registered in the topology yet. Add a City under 'Venues & Regions' to begin tracking.")
+        st.info("No cities registered in the topology yet.")
     else:
         for c in cities:
             st.markdown(f"### Municipality: **{c['location_name']}**")
@@ -1183,7 +1177,7 @@ elif nav == "🌐 Hawking Engine":
             k4.metric("Suggested Shift", f"{c['suggested_offset']:+0.4f}")
 
             with st.expander(f"Review & Deploy Offset for {c['location_name']}"):
-                shift = st.number_input(f"Offset Step ({c['location_name']})", value=float(c["suggested_offset"]) if c["suggested_offset"] != 0.0 else -0.025, step=0.005, format="%.4f", key=f"h_{c['location_id']}")
+                shift = st.number_input(f"Approved Offset Step ({c['location_name']})", value=float(c["suggested_offset"]) if c["suggested_offset"] != 0.0 else -0.025, step=0.005, format="%.4f", key=f"h_{c['location_id']}")
                 if st.button(f"Apply {shift:+0.4f} to {c['location_name']}", key=f"btn_{c['location_id']}"):
                     conn.execute("UPDATE locations SET hawking_offset = hawking_offset + ? WHERE location_id = ?", (shift, c['location_id']))
                     conn.execute("""

@@ -3,6 +3,7 @@ import sqlite3
 import math
 import json
 import os
+import io
 from datetime import datetime, timezone, date, time
 import pandas as pd
 
@@ -26,6 +27,55 @@ def add_column_if_not_exists(cursor, table, col_name, col_type):
 
 def format_pr_name(name, is_prov):
     return f"{name} (PR)" if is_prov else name
+
+def export_db_bytes():
+    """Flushes SQLite WAL to disk and returns a complete standalone backup file."""
+    conn = get_db_connection()
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+    conn.commit()
+    
+    # Use native backup to ensure a self-contained snapshot with zero pending transactions
+    mem_backup = sqlite3.connect(":memory:")
+    conn.backup(mem_backup)
+    conn.close()
+    
+    # Export bytes cleanly
+    temp_file = "temp_export_snapshot.db"
+    dest = sqlite3.connect(temp_file)
+    mem_backup.backup(dest)
+    dest.close()
+    mem_backup.close()
+    
+    with open(temp_file, "rb") as f:
+        data = f.read()
+    if os.path.exists(temp_file):
+        os.remove(temp_file)
+    return data
+
+def restore_db_from_bytes(uploaded_bytes):
+    """Atomically restores an uploaded database using SQLite native backup API."""
+    temp_in = "temp_incoming_restore.db"
+    with open(temp_in, "wb") as f:
+        f.write(uploaded_bytes)
+    
+    source = sqlite3.connect(temp_in)
+    tables = [r[0] for r in source.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+    if "players" not in tables or "global_config" not in tables:
+        source.close()
+        if os.path.exists(temp_in): os.remove(temp_in)
+        raise ValueError("The uploaded file is not a valid RYFT database snapshot.")
+    
+    dest = get_db_connection()
+    dest.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+    source.backup(dest)
+    source.close()
+    
+    dest.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+    dest.commit()
+    dest.close()
+    
+    if os.path.exists(temp_in):
+        os.remove(temp_in)
 
 def init_db():
     conn = get_db_connection()
@@ -157,18 +207,18 @@ def init_db():
     add_column_if_not_exists(c, "players", "rolling_365d_peak", "REAL NOT NULL DEFAULT 3.000")
     add_column_if_not_exists(c, "players", "tournament_floor", "REAL NOT NULL DEFAULT 0.000")
 
-    # Seed Rating Categories
-    default_cats = [
-        ("Beginner", 0.000, 0.999, 1, 1.00), ("Beginner+", 1.000, 1.999, 2, 1.00), ("Intermediate", 2.000, 3.499, 3, 1.00),
-        ("Intermediate+", 3.500, 4.499, 4, 1.00), ("Advanced", 4.500, 5.499, 5, 1.00), ("Pro", 5.500, 6.299, 6, 1.00), ("Elite", 6.300, 7.000, 7, 1.00)
-    ]
-    for c_name, c_min, c_max, s_ord, s_mult in default_cats:
-        c.execute("""INSERT INTO rating_categories (category_name, min_rating, max_rating, sort_order, speed_multiplier) 
-                     VALUES (?, ?, ?, ?, ?)
-                     ON CONFLICT(category_name) DO UPDATE SET min_rating=excluded.min_rating, max_rating=excluded.max_rating, sort_order=excluded.sort_order""", 
-                  (c_name, c_min, c_max, s_ord, s_mult))
+    # Seed Rating Categories ONLY IF Table is empty (Preserves Restored Data)
+    cat_count = c.execute("SELECT COUNT(*) FROM rating_categories").fetchone()[0]
+    if cat_count == 0:
+        default_cats = [
+            ("Beginner", 0.000, 0.999, 1, 1.00), ("Beginner+", 1.000, 1.999, 2, 1.00), ("Intermediate", 2.000, 3.499, 3, 1.00),
+            ("Intermediate+", 3.500, 4.499, 4, 1.00), ("Advanced", 4.500, 5.499, 5, 1.00), ("Pro", 5.500, 6.299, 6, 1.00), ("Elite", 6.300, 7.000, 7, 1.00)
+        ]
+        for c_name, c_min, c_max, s_ord, s_mult in default_cats:
+            c.execute("INSERT OR IGNORE INTO rating_categories (category_name, min_rating, max_rating, sort_order, speed_multiplier) VALUES (?, ?, ?, ?, ?)",
+                      (c_name, c_min, c_max, s_ord, s_mult))
 
-    # Seed Official Formats
+    # Seed 18 Formats
     official_formats = [
         ("STD_B03", "Best of 3 Sets", "MULTI_SET", 1.00, None, None, 0, 1),
         ("STD_B05", "Best of 5 Sets", "MULTI_SET", 1.00, None, None, 0, 1),
@@ -192,14 +242,18 @@ def init_db():
     for fid, fname, cat, mc, tg, tp, is_sb, is_a in official_formats:
         c.execute("""INSERT INTO match_formats (format_id, format_name, category, mc_weight, target_games, total_points, is_session_bound, is_active)
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                     ON CONFLICT(format_id) DO UPDATE SET format_name=excluded.format_name, category=excluded.category, mc_weight=excluded.mc_weight, target_games=excluded.target_games, total_points=excluded.total_points, is_session_bound=excluded.is_session_bound, is_active=excluded.is_active""", (fid, fname, cat, mc, tg, tp, is_sb, is_a))
+                     ON CONFLICT(format_id) DO UPDATE SET 
+                         format_name=excluded.format_name, category=excluded.category, target_games=excluded.target_games,
+                         total_points=excluded.total_points, is_session_bound=excluded.is_session_bound, is_active=excluded.is_active""",
+                  (fid, fname, cat, mc, tg, tp, is_sb, is_a))
 
-    seed_factory_parameters(c)
+    # Seed Config Matrix (INSERT OR IGNORE to Never Overwrite Restored User Data)
+    seed_factory_parameters(c, overwrite_existing=False)
 
     conn.commit()
     conn.close()
 
-def seed_factory_parameters(cursor):
+def seed_factory_parameters(cursor, overwrite_existing=False):
     master_params = [
         ("R_MIN", 0.000, 1, "Scale Absolute Floor", "Lowest possible rating.", "Clamps rating drops at 0.000.", "1. Core Bounds & Drag"),
         ("R_MAX", 7.000, 1, "Scale Absolute Ceiling", "Maximum rating ceiling.", "LOCKED at 7.000.", "1. Core Bounds & Drag"),
@@ -225,7 +279,7 @@ def seed_factory_parameters(cursor):
         ("TOURNAMENT_MULTIPLIER_ACTIVE", 1, 1, "Tournament Multiplier Toggle", "Activates stakes multiplier for tournament play.", "1 = Active, 0 = Inactive.", "4. Exchange Caps & Security"),
         ("TOURNAMENT_STAKES_MULTIPLIER", 1.15, 1, "Tournament Stakes Multiplier", "Rating delta multiplier for tournament matches.", "Default 1.15 (+15%).", "4. Exchange Caps & Security"),
         ("RD_MIN", 30.0, 1, "Certainty Floor", "Absolute uncertainty floor.", "Prevents RD dropping below 30.0.", "5. Uncertainty & Rust"),
-        ("RD_MAX", 350.0, 1, "Unrated Starting RD", "Uncertainty assigned at registration.", "Starting baseline uncertainty.", "5. Uncertainty & Rust"),
+        ("RD_MAX", 350.0, 1, "Unrated Starting RD", "Uncertainty assigned at registration.", "Starting uncertainty.", "5. Uncertainty & Rust"),
         ("RD_INFO_VARIANCE", 65.0, 1, "Contraction Speed", "Denominator in RD shrinkage.", "Lower values shrink RD faster.", "5. Uncertainty & Rust"),
         ("INACTIVITY_CONSTANT", 12.0, 1, "Inactivity Rust Rate", "Monthly uncertainty growth.", "Points of RD regained per month.", "5. Uncertainty & Rust"),
         ("COHORT_FACTOR_0_PROV", 1.00, 1, "Omega 0 Factor", "Contraction speed against verified anchors.", "100% information gain.", "5. Uncertainty & Rust"),
@@ -255,16 +309,25 @@ def seed_factory_parameters(cursor):
         ("CIRCUIT_BREAKER", 0.0250, 1, "Auto Cron Safety Ceiling", "Max shift per weekly cycle.", "Limits automated macro shifts.", "7. Hawking Macro")
     ]
     for k, v, act, tit, desc, tune, grp in master_params:
-        cursor.execute("""INSERT INTO global_config (param_key, param_value, is_active, title, description, tuning_guide, module_group)
-                          VALUES (?, ?, ?, ?, ?, ?, ?)
-                          ON CONFLICT(param_key) DO UPDATE SET 
-                              param_value=excluded.param_value, title=excluded.title, description=excluded.description, 
-                              tuning_guide=excluded.tuning_guide, module_group=excluded.module_group""", (k, v, act, tit, desc, tune, grp))
+        if overwrite_existing:
+            cursor.execute("""INSERT INTO global_config (param_key, param_value, is_active, title, description, tuning_guide, module_group)
+                              VALUES (?, ?, ?, ?, ?, ?, ?)
+                              ON CONFLICT(param_key) DO UPDATE SET 
+                                  param_value=excluded.param_value, is_active=excluded.is_active, title=excluded.title, 
+                                  description=excluded.description, tuning_guide=excluded.tuning_guide, module_group=excluded.module_group""",
+                           (k, v, act, tit, desc, tune, grp))
+        else:
+            cursor.execute("""INSERT INTO global_config (param_key, param_value, is_active, title, description, tuning_guide, module_group)
+                              VALUES (?, ?, ?, ?, ?, ?, ?)
+                              ON CONFLICT(param_key) DO UPDATE SET 
+                                  title=excluded.title, description=excluded.description, 
+                                  tuning_guide=excluded.tuning_guide, module_group=excluded.module_group""",
+                           (k, v, act, tit, desc, tune, grp))
 
 init_db()
 
 # ==============================================================================
-# 2. V.16 CALCULATION ENGINE & HELPERS
+# 2. V.16 CALCULATION ENGINE
 # ==============================================================================
 class RyftV16:
     @staticmethod
@@ -422,6 +485,7 @@ class RyftV16:
                     raw_d *= dd
                     if dd < 1.00: flags.append(f"ANTI_CARRY ({int((1-dd)*100)}%)")
 
+            # TOURNAMENT STAKES MULTIPLIER & CAPS
             if is_tournament:
                 t_active = bool(cfg.get("TOURNAMENT_MULTIPLIER_ACTIVE", 1))
                 t_mult = cfg.get("TOURNAMENT_STAKES_MULTIPLIER", 1.15) if t_active else 1.00
@@ -463,7 +527,7 @@ class RyftV16:
         return {"ta_r": ta_r, "tb_r": tb_r, "ea": ea, "mov": s_margin, "applied_m_c": mc, "res": res}
 
 # ==============================================================================
-# 3. ADVANCED SESSIONS SCHEDULER & TRAFFIC ENGINE (OBSERVATION 1 COMPLETE FIX)
+# 3. ADVANCED SESSIONS SCHEDULER & TRAFFIC ENGINE
 # ==============================================================================
 class SessionScheduleEngine:
     @staticmethod
@@ -477,7 +541,6 @@ class SessionScheduleEngine:
             t_list = [dict(t) for t in teams_created]
             n_teams = len(t_list)
             
-            # Virtual Bye for Odd Counts
             has_bye = (n_teams % 2 != 0)
             if has_bye:
                 t_list.append({"p1": None, "p2": None, "is_bye": True})
@@ -489,18 +552,15 @@ class SessionScheduleEngine:
                 for r_idx in range(cycle_rounds):
                     round_num = (r_cycle * cycle_rounds) + (r_idx + 1)
                     
-                    # Berger pairing algorithm
                     round_pairings = []
                     for i in range(n_eff // 2):
                         t1 = t_list[i]
                         t2 = t_list[n_eff - 1 - i]
                         
-                        # Discard pairings involving the virtual Bye
                         if t1.get("is_bye") or t2.get("is_bye"):
                             continue
                         round_pairings.append((t1, t2))
 
-                    # Distribute round matches across dedicated courts
                     for m_idx, (ta, tb) in enumerate(round_pairings):
                         assigned_court = court_picks[m_idx % num_courts]
                         fixtures.append({
@@ -514,7 +574,6 @@ class SessionScheduleEngine:
                         })
                         fixture_order += 1
 
-                    # Rotate polygon: fix index 0, rotate rest clockwise
                     t_list = [t_list[0]] + [t_list[-1]] + t_list[1:-1]
 
         # --- B. ROTATING TEAMS (BALANCED SOCIAL WHIST WITH NO CONSECUTIVE SIT-OUTS) ---
@@ -526,20 +585,17 @@ class SessionScheduleEngine:
             matches_played = {p: 0 for p in enrolled_pids}
             sat_out_last_round = {p: False for p in enrolled_pids}
             partner_matrix = {p1: {p2: 0 for p2 in enrolled_pids} for p1 in enrolled_pids}
-            opponent_matrix = {p1: {p2: 0 for p2 in enrolled_pids} for p1 in enrolled_pids}
 
-            # Number of simultaneous matches possible
             max_courts_usable = min(num_courts, n_players // 4)
             if max_courts_usable < 1:
                 max_courts_usable = 1
 
             for round_num in range(1, int(rounds_count) + 1):
-                # Sort players for round: Prioritize who sat out last round, then lowest played count
                 def player_sort_key(pid):
                     return (
-                        0 if sat_out_last_round[pid] else 1, # Must play if sat out
-                        matches_played[pid],                 # Fewest matches
-                        pid                                  # Tiebreaker
+                        0 if sat_out_last_round[pid] else 1,
+                        matches_played[pid],
+                        pid
                     )
 
                 sorted_pids = sorted(enrolled_pids, key=player_sort_key)
@@ -547,23 +603,19 @@ class SessionScheduleEngine:
                 active_players = sorted_pids[:needed_players]
                 bench_players = sorted_pids[needed_players:]
 
-                # Update sit-out states for next round
                 for p in enrolled_pids:
                     sat_out_last_round[p] = (p in bench_players)
                     if p in active_players:
                         matches_played[p] += 1
 
-                # Form matches for active players minimizing duplicate partnerships
                 court_pool = list(active_players)
                 for c_idx in range(max_courts_usable):
                     if len(court_pool) < 4:
                         break
                     
-                    # Select best 4 players
                     m_players = court_pool[:4]
                     court_pool = court_pool[4:]
 
-                    # Pick partnership with least previous partnership history
                     combos = [
                         ((m_players[0], m_players[1]), (m_players[2], m_players[3])),
                         ((m_players[0], m_players[2]), (m_players[1], m_players[3])),
@@ -577,7 +629,6 @@ class SessionScheduleEngine:
                     best_combo = min(combos, key=partnership_cost)
                     (ta_p1, ta_p2), (tb_p1, tb_p2) = best_combo
 
-                    # Update matrix
                     partner_matrix[ta_p1][ta_p2] += 1
                     partner_matrix[ta_p2][ta_p1] += 1
                     partner_matrix[tb_p1][tb_p2] += 1
@@ -654,7 +705,7 @@ nav = st.sidebar.radio("Navigation Console", [
 ])
 
 # ------------------------------------------------------------------------------
-# TAB 1: THE DASHBOARD
+# TAB 1: THE DASHBOARD (PERMANENT WAL-CHECKPOINTED BACKUP & RESTORE)
 # ------------------------------------------------------------------------------
 if nav == "📊 The Dashboard":
     st.title("System Command Center & Macro Health")
@@ -677,19 +728,45 @@ if nav == "📊 The Dashboard":
     m6.metric("Countries", n_co)
 
     st.markdown("---")
-    with st.expander("💾 Database Snapshot Backup & Restore", expanded=True):
+    with st.expander("💾 Database Snapshot Backup & Restore (Zero Data Loss Architecture)", expanded=True):
         col_b1, col_b2 = st.columns(2)
         with col_b1:
             st.markdown("#### 📥 Backup Database Snapshot")
+            st.caption("Exports all tables, rolling high-water marks, matches, and configurations cleanly flushed from cache.")
             if os.path.exists(DB_FILE):
-                with open(DB_FILE, "rb") as f:
-                    st.download_button("⬇️ Download System Snapshot (.db)", f.read(), f"RYFT_V16_Backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db", mime="application/octet-stream", use_container_width=True)
+                try:
+                    db_bytes_to_download = export_db_bytes()
+                    st.download_button(
+                        "⬇️ Download System Snapshot (.db)",
+                        data=db_bytes_to_download,
+                        file_name=f"RYFT_V16_Backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db",
+                        mime="application/x-sqlite3",
+                        use_container_width=True
+                    )
+                except Exception as ex:
+                    st.error(f"Error preparing snapshot: {ex}")
+            else:
+                st.info("No active database detected.")
+
         with col_b2:
             st.markdown("#### 📤 Upload Saved State")
-            up_db = st.file_uploader("Select .db file", type=["db", "sqlite"])
-            if up_db and st.button("🚨 Restore Entire System", type="primary", use_container_width=True):
-                with open(DB_FILE, "wb") as f: f.write(up_db.getbuffer())
-                init_db(); st.success("System Restored!"); st.rerun()
+            st.caption("Atomically overwrites the active system state with an uploaded backup file.")
+            up_db = st.file_uploader("Select .db file", type=["db", "sqlite", "sqlite3"])
+            if up_db is not None:
+                if st.button("🚨 Restore Entire System From Backup", type="primary", use_container_width=True):
+                    try:
+                        restore_db_from_bytes(up_db.getbuffer())
+                        # Verify restoration stats
+                        check_conn = get_db_connection()
+                        rest_p = check_conn.execute("SELECT COUNT(*) FROM players").fetchone()[0]
+                        rest_v = check_conn.execute("SELECT COUNT(*) FROM venues").fetchone()[0]
+                        rest_m = check_conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0]
+                        rest_s = check_conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+                        check_conn.close()
+                        st.success(f"✅ System Restored Successfully! Restored {rest_p} Players, {rest_v} Venues, {rest_m} Matches, and {rest_s} Sessions.")
+                        st.rerun()
+                    except Exception as err:
+                        st.error(f"Failed to restore database: {str(err)}")
 
     with st.expander("🚨 Advanced System Resets", expanded=False):
         r_c1, r_c2, r_c3 = st.columns(3)
@@ -702,7 +779,7 @@ if nav == "📊 The Dashboard":
             if res_n:
                 for tbl in ["match_logs", "matches", "session_matches", "sessions", "players", "venues", "locations", "progression_speed_rules", "config_changelog", "player_changelog"]:
                     conn.execute(f"DELETE FROM {tbl};")
-                st.warning("Database completely wiped.")
+                st.warning("Database completely wiped to clean slate.")
             else:
                 if res_m:
                     conn.execute("DELETE FROM match_logs;"); conn.execute("DELETE FROM matches;")
@@ -714,7 +791,7 @@ if nav == "📊 The Dashboard":
             conn.commit(); conn.close(); st.rerun()
 
 # ------------------------------------------------------------------------------
-# TAB 2: LOG MATCHES
+# TAB 2: LOG MATCHES (HIGH CONTRAST CSS CARDS & TOURNAMENT CHECKBOX)
 # ------------------------------------------------------------------------------
 elif nav == "🎾 Log Matches":
     st.title("Log Matches & Real-Time Simulation Hub")
@@ -900,7 +977,7 @@ elif nav == "🎾 Log Matches":
                 st.rerun()
 
 # ------------------------------------------------------------------------------
-# TAB 3: CLUB SESSIONS & MIXERS (ADVANCED SCHEDULER & TRAFFIC ENGINE)
+# TAB 3: CLUB SESSIONS & MIXERS
 # ------------------------------------------------------------------------------
 elif nav == "🗓️ Club Sessions & Mixers":
     st.title("Sessions & Event Traffic Controller")
@@ -1006,7 +1083,6 @@ elif nav == "🗓️ Club Sessions & Mixers":
             else:
                 s_id = f"SESS_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
                 
-                # Generate full multi-round fixtures
                 fixtures = SessionScheduleEngine.generate_schedule(
                     team_format=s_team,
                     match_mode=s_mode,
@@ -1107,7 +1183,7 @@ elif nav == "🗓️ Club Sessions & Mixers":
                         st.success("Check-In status updated!")
                         st.rerun()
 
-            # --- SUB-TAB 2: MATCHES HUB (DYNAMIC DISPATCH & ACCORDION COMPLETED LIST) ---
+            # --- SUB-TAB 2: MATCHES HUB ---
             elif sub_nav == "🏟️ Matches Hub":
                 st.subheader("Court Traffic Schedule & Match Scoring")
                 fixtures = conn.execute("SELECT * FROM session_matches WHERE session_id = ? ORDER BY match_order ASC, round_number ASC", (s_id,)).fetchall()
@@ -1126,24 +1202,6 @@ elif nav == "🗓️ Club Sessions & Mixers":
                         completed.append(m)
                     else:
                         uncompleted.append(m)
-
-                # Reorder queue tool
-                with st.expander("🔀 Reorder Schedule / Swap Match Order", expanded=False):
-                    sched_matches = [dict(m) for m in fixtures if m["match_status"] in ("SCHEDULED", "LIVE")]
-                    if len(sched_matches) >= 2:
-                        m_lookup = {m["session_match_id"]: m for m in sched_matches}
-                        m_ids = list(m_lookup.keys())
-                        re1, re2 = st.columns(2)
-                        m_id_1 = re1.selectbox("Move Match", options=m_ids, format_func=lambda x: f"Match #{m_lookup[x]['match_order']} ({m_lookup[x]['court_id']} R{m_lookup[x]['round_number']})", key="sw1")
-                        m_id_2 = re2.selectbox("Swap Position With", options=m_ids, format_func=lambda x: f"Match #{m_lookup[x]['match_order']} ({m_lookup[x]['court_id']} R{m_lookup[x]['round_number']})", key="sw2")
-                        if st.button("Execute Queue Swap"):
-                            order_1 = m_lookup[m_id_1]["match_order"]
-                            order_2 = m_lookup[m_id_2]["match_order"]
-                            conn.execute("UPDATE session_matches SET match_order=? WHERE session_match_id=?", (order_2, m_id_1))
-                            conn.execute("UPDATE session_matches SET match_order=? WHERE session_match_id=?", (order_1, m_id_2))
-                            conn.commit(); st.success("Queue reordered!"); st.rerun()
-                    else:
-                        st.info("Need at least 2 active matches to reorder.")
 
                 # SECTION: UPCOMING PLANNED MATCHES
                 st.markdown(f"### ⏳ Upcoming Planned Matches ({len(uncompleted)} remaining)")
@@ -1243,7 +1301,6 @@ elif nav == "🗓️ Club Sessions & Mixers":
 
                         status_tag = "[CANCELLED]" if m['match_status'] == "CANCELLED" else f"[{m['score_team_a']} - {m['score_team_b']}]"
                         
-                        # Collapsed view by default
                         with st.expander(f"✓ Match #{m['match_order']} • {m['court_id']} (Round {m['round_number']}) — {ta_players} {status_tag} {tb_players}", expanded=False):
                             with st.form(f"edit_comp_{m['session_match_id']}"):
                                 c_ea, c_eb = st.columns(2)
@@ -1254,11 +1311,10 @@ elif nav == "🗓️ Club Sessions & Mixers":
                                                  (new_a, new_b, max(new_a, new_b), min(new_a, new_b), m['session_match_id']))
                                     conn.commit(); st.success("Score Updated!"); st.rerun()
 
-                # EARLY SESSION TERMINATION ACTION
+                # EARLY TERMINATION ACTION
                 st.markdown("---")
                 if uncompleted:
                     if st.button("⏹️ End Session Early & Finalize Completed Matches", type="secondary"):
-                        # Mark all uncompleted as CANCELLED so they don't block
                         conn.execute("UPDATE session_matches SET match_status='CANCELLED' WHERE session_id=? AND match_status='SCHEDULED'", (s_id,))
                         conn.commit()
                         st.warning("Unplayed fixtures cancelled. Session ready to commit on Standings page.")
@@ -1320,6 +1376,7 @@ elif nav == "🗓️ Club Sessions & Mixers":
                 df_stand = pd.DataFrame(list(standings.values())).sort_values(by=["Points Won", "Diff"], ascending=False)
                 st.dataframe(df_stand, use_container_width=True)
 
+                # Dry run rating delta simulation
                 st.markdown("---")
                 st.markdown("#### 🔬 Projected Rating Movements (Dry-Run Preview)")
                 st.caption("Ratings operate in-memory until you explicitly commit the session.")
@@ -1378,12 +1435,12 @@ elif nav == "🗓️ Club Sessions & Mixers":
 
                             m_id = f"M_SESS_{sm['session_match_id']}"
                             conn.execute('''
-                                INSERT INTO matches (match_id, venue_id, format_id, session_id, is_singles, team_a_p1_id, team_a_p2_id, team_b_p1_id, team_b_p2_id,
+                                INSERT INTO matches (match_id, venue_id, format_id, session_id, is_singles, is_tournament, team_a_p1_id, team_a_p2_id, team_b_p1_id, team_b_p2_id,
                                                     score_team_a, score_team_b, set_scores_json, games_winner, games_loser, pre_rating_a, pre_rating_b,
                                                     win_expectancy_a, applied_m_c, applied_s_margin, delta_r_p1, delta_r_p2, delta_r_p3, delta_r_p4, match_timestamp)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             ''', (
-                                m_id, s_data["venue_id"], s_data["format_id"], s_id, 1 if is_sing else 0,
+                                m_id, s_data["venue_id"], s_data["format_id"], s_id, 1 if is_sing else 0, 1 if s_data.get("is_tournament", 0) else 0,
                                 p1_d["player_id"], p2_d["player_id"] if p2_d else None, p3_d["player_id"], p4_d["player_id"] if p4_d else None,
                                 sm["score_team_a"], sm["score_team_b"], sm["set_scores_json"], max(sm["games_winner"], sm["score_team_a"]), min(sm["games_loser"], sm["score_team_b"]),
                                 out["ta_r"], out["tb_r"], out["ea"], out["applied_m_c"], out["mov"],
@@ -1445,7 +1502,7 @@ elif nav == "🗓️ Club Sessions & Mixers":
     conn.close()
 
 # ------------------------------------------------------------------------------
-# TAB 4: HISTORICAL MATCHES (OBSERVATION 2 FIXED: SESSION BADGES & FILTERING)
+# TAB 4: HISTORICAL MATCHES
 # ------------------------------------------------------------------------------
 elif nav == "📜 Historical Matches":
     st.title("Historical Matches & Deep Algorithmic Audit Ledger")
@@ -1465,7 +1522,6 @@ elif nav == "📜 Historical Matches":
     s_venue = f2.selectbox("Filter by Venue", ["All Venues"] + [r["venue_name"] for r in conn.execute("SELECT venue_name FROM venues").fetchall()])
     s_city = f3.selectbox("Filter by City", ["All Cities"] + [r["location_name"] for r in conn.execute("SELECT location_name FROM locations WHERE location_type = 'CITY'").fetchall()])
 
-    # OBSERVATION 2: SESSIONS FILTERING
     sess_list = conn.execute("SELECT session_id, session_title FROM sessions ORDER BY created_at DESC").fetchall()
     sess_opts = ["-- All Matches --", "Non-Session Matches Only"] + [f"{s['session_title']} ({s['session_id']})" for s in sess_list]
     s_sess_pick = f4.selectbox("Filter by Session", sess_opts)
@@ -1762,7 +1818,7 @@ elif nav == "⚙️ Global Config":
     col_btn1, col_btn2 = st.columns([4, 1])
     col_btn1.markdown("### 🏆 Rating Categories, Ranges & Progression Speeds")
     if col_btn2.button("🔄 Reset Matrix to Factory Defaults", type="secondary"):
-        seed_factory_parameters(conn.cursor())
+        seed_factory_parameters(conn.cursor(), overwrite_existing=True)
         conn.commit()
         st.success("All 52 Global Parameters reset to factory V.16 baselines!")
         st.rerun()

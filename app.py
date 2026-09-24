@@ -114,8 +114,6 @@ def init_db():
         ("ICE_OUT_MULT_TIER_2", 0.05, 1, "Ice-Out Dampener 2", "Multiplier applied if Tier 2 Gap breached.", "0.05 = 95% loss reduction.", "4. Partner Guardrails"),
         ("ANTI_CARRY_GAP_TIER_1", 1.75, 1, "Anti-Carry Gap Threshold 1", "Min gap to trigger 50% carry dampening.", "Applies to weaker partner.", "4. Partner Guardrails"),
         ("ANTI_CARRY_MULT_TIER_1", 0.50, 1, "Anti-Carry Dampener 1", "Multiplier applied if Tier 1 carry breached.", "0.50 = 50% gain reduction.", "4. Partner Guardrails"),
-        ("ANTI_CARRY_GAP_TIER_2", 2.50, 1, "Anti-Carry Gap Threshold 2", "Min gap to trigger 25% carry dampening.", "Extreme tow jobs.", "4. Partner Guardrails"),
-        ("ANTI_CARRY_MULT_TIER_2", 0.25, 1, "Anti-Carry Dampener 2", "Multiplier applied if Tier 2 carry breached.", "0.25 = 75% gain reduction.", "4. Partner Guardrails"),
         ("MAX_24H_EXCHANGE_CAP", 0.150, 1, "24H Casual Cap", "Net transfer ceiling.", "Prevents farming.", "5. Exchange Caps & Security"),
         ("PROVISIONAL_CAP_MULTIPLIER", 2.5, 1, "Provisional Cap Relaxer", "Multiplier on 24H cap for PRs.", "Allows 0.375 point movement.", "5. Exchange Caps & Security"),
         ("SESSION_EXCHANGE_CAP", 0.300, 1, "Verified Session Cap", "Cap for verified club events.", "Doubles point limits for mixers.", "5. Exchange Caps & Security"),
@@ -327,13 +325,20 @@ class RyftV16:
             base_cap = cfg.get("SESSION_EXCHANGE_CAP", 0.300) if session_id and session_checked_in >= cfg.get("MIN_SESSION_PLAYERS", 6) else cfg.get("MAX_24H_EXCHANGE_CAP", 0.150)
             cap = base_cap * (cfg.get("PROVISIONAL_CAP_MULTIPLIER", 2.5) if prov else 1.0)
             
-            # FIX 1: Allow Rightsizing & Elevator Blowouts to Bypass the 24H Casual Cap (Bit 12 / Bit 13)
-            bypass_cap = prov and (raw_d > 0) and ("RIGHTSIZING_INTERPOLATION" in flags) and bool(cfg.get("PROVISIONAL_BYPASS_EXCHANGE_CAP", 1))
+            # FIX 1: Strict Elevator Blowout Activation for Cap Bypass
+            opp_team_r = tb_r if is_a else ta_r
+            is_elevator_active = (
+                prov and won and (raw_d > cap) and
+                (s_margin >= 1.00 or (g_w_raw >= 2 * g_l_raw and g_w_raw >= 4)) and
+                (opp_team_r >= r - 0.50)
+            )
 
-            if bypass_cap:
+            if is_elevator_active and bool(cfg.get("PROVISIONAL_BYPASS_EXCHANGE_CAP", 1)):
                 max_allowed = cfg.get("MAX_PROVISIONAL_DELTA", 0.750)
                 final_d = min(max_allowed, max(0.0, raw_d))
                 flags.append("PROVISIONAL_CAP_BYPASS")
+                if final_d >= 0.500:
+                    flags.append("[ALERT_SMURF_RIGHTSIZING_SURGE]")
             elif is_tournament and bool(cfg.get("TOURNAMENT_MULTIPLIER_ACTIVE", 1)):
                 t_mult = cfg.get("TOURNAMENT_STAKES_MULTIPLIER", 1.15)
                 final_d = raw_d * t_mult; flags.append(f"TOURNAMENT ({t_mult}x, Uncapped)")
@@ -906,7 +911,8 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
                                     sets_recorded.append((s2a, s2b))
                                     if st.checkbox("Deciding Set 3", key=f"s3_chk_{m['session_match_id']}"):
                                         s3c1, s3c2 = st.columns(2)
-                                        s3a = s3c1.number_input(f"Set 3: {ta_players}", 0, 7, 6, key=f"s3a_{m['session_match_id']}"); s3b = s3c2.number_input(f"Set 3: {tb_players}", 0, 7, 4, key=f"s3b_{m['session_match_id']}")
+                                        s3a = s3c1.number_input(f"Set 3: {ta_players}", 0, 7, 6, key=f"s3a_{m['session_match_id']}")
+                                        s3b = s3c2.number_input(f"Set 3: {tb_players}", 0, 7, 4, key=f"s3b_{m['session_match_id']}")
                                         sets_recorded.append((s3a, s3b))
                                     sa, sb = sum(1 for s in sets_recorded if s[0]>s[1]), sum(1 for s in sets_recorded if s[1]>s[0])
                                     gw, gl = sum(x[0] for x in sets_recorded), sum(x[1] for x in sets_recorded)
@@ -1177,7 +1183,7 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
                                 sm["score_team_a"], sm["score_team_b"], sm["set_scores_json"], max(sm["games_winner"], sm["score_team_a"]), min(sm["games_loser"], sm["score_team_b"]),
                                 out["ta_r"], out["tb_r"], out["ea"], out["applied_m_c"], out["mov"],
                                 out["res"][0]["delta"], out["res"][2]["delta"] if not is_sing else 0.0,
-                                out["res"][1]["delta"], out["res"][3]["delta"] if not is_singles else 0.0, json.dumps(all_guardrails), ts))
+                                out["res"][1]["delta"], out["res"][3]["delta"] if not is_sing else 0.0, json.dumps(all_guardrails), ts))
 
                             for pr in out["res"]:
                                 conn.execute("""UPDATE players SET latent_mmr=?, display_rating=?, rating_deviation=?, rating_accuracy_pct=?, calibration_tier=?, is_provisional=?, consecutive_losses=?, rolling_90d_peak=max(rolling_90d_peak, ?), rolling_180d_peak=max(rolling_180d_peak, ?), rolling_365d_peak=max(rolling_365d_peak, ?), last_match_time=? WHERE player_id=?""",
@@ -1571,7 +1577,7 @@ elif nav == "🏢 Venues & Regions":
         co_code = st.text_input("ISO 3-Letter Code", key="aco_code").upper()
         if st.button("Register Country", type="primary"):
             if co_name and co_code:
-                conn.execute("INSERT INTO locations (location_id, location_type, location_name, country_code, updated_at) VALUES (?, 'COUNTRY', ?, ?, ?)""", (f"LOC_{co_code}", co_name, co_code, datetime.now(timezone.utc).isoformat()))
+                conn.execute("INSERT INTO locations (location_id, location_type, location_name, country_code, updated_at) VALUES (?, 'COUNTRY', ?, ?, ?)", (f"LOC_{co_code}", co_name, co_code, datetime.now(timezone.utc).isoformat()))
                 conn.commit(); st.success(f"Added {co_name}!"); st.rerun()
 
     st.markdown("---")

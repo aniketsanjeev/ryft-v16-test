@@ -7,7 +7,6 @@ import io
 from datetime import datetime, timezone, date, time
 import pandas as pd
 
-# Optional ReportLab import for PDF generation
 try:
     from reportlab.lib.pagesizes import letter
     from reportlab.lib import colors
@@ -107,6 +106,7 @@ def init_db():
         ("MARGIN_SCALE", 0.40, 1, "Margin Blowout Scale", "Max bonus factor for blowouts.", "Full blowout bonus = Base + Scale.", "3. Margins & Rightsizing"),
         ("MAX_PROVISIONAL_DELTA", 0.750, 1, "Placement Ceiling", "Max points won in interpolation.", "Single-match placement cap.", "3. Margins & Rightsizing"),
         ("PROVISIONAL_ABSORPTION_ALPHA", 0.45, 1, "Rightsizing Velocity", "Speed toward performance rating.", "Higher = faster rightsizing.", "3. Margins & Rightsizing"),
+        ("PROVISIONAL_BYPASS_EXCHANGE_CAP", 1, 1, "Provisional Cap Bypass", "Allows rightsizing blowouts to reach placement ceiling.", "Default 1 (Active).", "3. Margins & Rightsizing"),
         ("DISPLAY_RATING_SOFT_FLOOR", 0.050, 1, "Display Soft Floor", "Buffer preventing minor drops.", "Default 0.050.", "3. Margins & Rightsizing"),
         ("ICE_OUT_GAP_TIER_1", 1.50, 1, "Ice-Out Gap Threshold 1", "Min partner gap to trigger 20% dampening.", "Applies to Anchor.", "4. Partner Guardrails"),
         ("ICE_OUT_MULT_TIER_1", 0.20, 1, "Ice-Out Dampener 1", "Multiplier applied if Tier 1 Gap breached.", "0.20 = 80% loss reduction.", "4. Partner Guardrails"),
@@ -114,6 +114,8 @@ def init_db():
         ("ICE_OUT_MULT_TIER_2", 0.05, 1, "Ice-Out Dampener 2", "Multiplier applied if Tier 2 Gap breached.", "0.05 = 95% loss reduction.", "4. Partner Guardrails"),
         ("ANTI_CARRY_GAP_TIER_1", 1.75, 1, "Anti-Carry Gap Threshold 1", "Min gap to trigger 50% carry dampening.", "Applies to weaker partner.", "4. Partner Guardrails"),
         ("ANTI_CARRY_MULT_TIER_1", 0.50, 1, "Anti-Carry Dampener 1", "Multiplier applied if Tier 1 carry breached.", "0.50 = 50% gain reduction.", "4. Partner Guardrails"),
+        ("ANTI_CARRY_GAP_TIER_2", 2.50, 1, "Anti-Carry Gap Threshold 2", "Min gap to trigger 25% carry dampening.", "Extreme tow jobs.", "4. Partner Guardrails"),
+        ("ANTI_CARRY_MULT_TIER_2", 0.25, 1, "Anti-Carry Dampener 2", "Multiplier applied if Tier 2 carry breached.", "0.25 = 75% gain reduction.", "4. Partner Guardrails"),
         ("MAX_24H_EXCHANGE_CAP", 0.150, 1, "24H Casual Cap", "Net transfer ceiling.", "Prevents farming.", "5. Exchange Caps & Security"),
         ("PROVISIONAL_CAP_MULTIPLIER", 2.5, 1, "Provisional Cap Relaxer", "Multiplier on 24H cap for PRs.", "Allows 0.375 point movement.", "5. Exchange Caps & Security"),
         ("SESSION_EXCHANGE_CAP", 0.300, 1, "Verified Session Cap", "Cap for verified club events.", "Doubles point limits for mixers.", "5. Exchange Caps & Security"),
@@ -251,6 +253,7 @@ class RyftV16:
             r, rd, prov = float(p.get("latent_mmr", 3.0)), float(p.get("rating_deviation", 350.0)), bool(p.get("is_provisional", 1))
             is_manual_override = bool(p.get("is_manually_verified", 0))
             is_quar = bool(p.get("is_quarantined", 0))
+            is_anchor_player = bool(p.get("is_anchor", 0)) or (p.get("calibration_tier") == "ANCHOR") or (not prov and rd <= 100.0)
             won = (is_a and s_a > s_b) or (not is_a and s_b > s_a)
             
             q, sig = 0.0057565, cfg.get("RD_INFO_VARIANCE", 65.0)
@@ -274,10 +277,16 @@ class RyftV16:
                 ratio = (g_w_raw + 0.5) / (g_l_raw + 0.5) if won else (g_l_raw + 0.5) / (g_w_raw + 0.5)
                 r_perf = opp_team_r + 2.0 * math.log10(ratio)
                 raw_d = (r_perf - r) * cfg.get("PROVISIONAL_ABSORPTION_ALPHA", 0.45) * mc * g_opp
-                raw_d = max(-cfg.get("MAX_PROVISIONAL_DELTA", 0.750), min(cfg.get("MAX_PROVISIONAL_DELTA", 0.750), raw_d))
+                max_d = cfg.get("MAX_PROVISIONAL_DELTA", 0.750)
+                raw_d = max(-max_d, min(max_d, raw_d))
                 flags.append("RIGHTSIZING_INTERPOLATION")
             else:
-                k_base = cfg.get("K_MAX", 0.400) - (r / cfg.get("R_MAX", 7.000)) * (cfg.get("K_MAX", 0.400) - cfg.get("K_MIN", 0.080))
+                # FIX 2: Verified Anchors locked to K_MIN (0.080) to buffer rating loss against unrated smurfs
+                if is_anchor_player:
+                    k_base = cfg.get("K_MIN", 0.080)
+                else:
+                    k_base = cfg.get("K_MAX", 0.400) - (r / cfg.get("R_MAX", 7.000)) * (cfg.get("K_MAX", 0.400) - cfg.get("K_MIN", 0.080))
+                
                 _, _, _, cat_speed = cls.get_cat_for_rating(r, conn=conn)
                 if cat_speed != 1.00: k_base *= cat_speed; flags.append(f"CAT_SPEED ({cat_speed:.2f}x)")
                 drag = ((7.000 - r) / 7.000) * ((7.000 - r) / (7.000 - 6.300))**2.5 if r >= 6.300 else 1.0
@@ -286,22 +295,27 @@ class RyftV16:
 
             if not is_singles and partner and not is_quar:
                 gap = abs(r - float(partner.get("latent_mmr", 3.0)))
+                io_gap1, io_m1 = cfg.get("ICE_OUT_GAP_TIER_1", 1.50), cfg.get("ICE_OUT_MULT_TIER_1", 0.20)
+                io_gap2, io_m2 = cfg.get("ICE_OUT_GAP_TIER_2", 2.00), cfg.get("ICE_OUT_MULT_TIER_2", 0.05)
+                ac_gap1, ac_m1 = cfg.get("ANTI_CARRY_GAP_TIER_1", 1.75), cfg.get("ANTI_CARRY_MULT_TIER_1", 0.50)
+                
                 part_prov = bool(partner.get("is_provisional", 1))
                 part_rd = float(partner.get("rating_deviation", 350.0))
-                
-                if prov and part_prov and rd > 200.0 and part_rd > 200.0:
+                is_mutual_prov = (prov and part_prov and rd > 200.0 and part_rd > 200.0)
+
+                if is_mutual_prov:
                     flags.append("MUTUAL_PROV_EXEMPTION")
                 else:
                     if not won and r > float(partner.get("latent_mmr", 3.0)):
-                        dd = cfg.get("ICE_OUT_MULT_TIER_2", 0.05) if gap >= cfg.get("ICE_OUT_GAP_TIER_2", 2.00) else (cfg.get("ICE_OUT_MULT_TIER_1", 0.20) if gap >= cfg.get("ICE_OUT_GAP_TIER_1", 1.50) else (0.50 if gap >= 1.0 else 1.00))
+                        dd = io_m2 if gap >= io_gap2 else (io_m1 if gap >= io_gap1 else (0.50 if gap >= 1.0 else 1.00))
                         raw_d *= dd
                         if dd < 1.00: flags.append(f"[ALERT_ICE_OUT_ANCHOR_SHIELD] ({int((1-dd)*100)}%)")
                     elif won and r < float(partner.get("latent_mmr", 3.0)):
-                        dd = cfg.get("ANTI_CARRY_MULT_TIER_2", 0.25) if gap >= cfg.get("ANTI_CARRY_GAP_TIER_2", 2.50) else (cfg.get("ANTI_CARRY_MULT_TIER_1", 0.50) if gap >= cfg.get("ANTI_CARRY_GAP_TIER_1", 1.75) else (0.75 if gap >= 1.2 else 1.00))
+                        dd = cfg.get("ANTI_CARRY_MULT_TIER_2", 0.25) if gap >= cfg.get("ANTI_CARRY_GAP_TIER_2", 2.50) else (ac_m1 if gap >= ac_gap1 else (0.75 if gap >= 1.2 else 1.00))
                         raw_d *= dd
                         if dd < 1.00: flags.append(f"ANTI_CARRY ({int((1-dd)*100)}%)")
 
-            # Bit 16: Sybil Trust Bypass (<5 matches)
+            # Bit 16 Sybil Trust Bypass (<5 matches)
             m_played = int(p.get("verified_matches_count", 0))
             w_g = 1.0
             if m_played >= 5:
@@ -313,7 +327,14 @@ class RyftV16:
             base_cap = cfg.get("SESSION_EXCHANGE_CAP", 0.300) if session_id and session_checked_in >= cfg.get("MIN_SESSION_PLAYERS", 6) else cfg.get("MAX_24H_EXCHANGE_CAP", 0.150)
             cap = base_cap * (cfg.get("PROVISIONAL_CAP_MULTIPLIER", 2.5) if prov else 1.0)
             
-            if is_tournament and bool(cfg.get("TOURNAMENT_MULTIPLIER_ACTIVE", 1)):
+            # FIX 1: Allow Rightsizing & Elevator Blowouts to Bypass the 24H Casual Cap (Bit 12 / Bit 13)
+            bypass_cap = prov and (raw_d > 0) and ("RIGHTSIZING_INTERPOLATION" in flags) and bool(cfg.get("PROVISIONAL_BYPASS_EXCHANGE_CAP", 1))
+
+            if bypass_cap:
+                max_allowed = cfg.get("MAX_PROVISIONAL_DELTA", 0.750)
+                final_d = min(max_allowed, max(0.0, raw_d))
+                flags.append("PROVISIONAL_CAP_BYPASS")
+            elif is_tournament and bool(cfg.get("TOURNAMENT_MULTIPLIER_ACTIVE", 1)):
                 t_mult = cfg.get("TOURNAMENT_STAKES_MULTIPLIER", 1.15)
                 final_d = raw_d * t_mult; flags.append(f"TOURNAMENT ({t_mult}x, Uncapped)")
             elif cumulative_deltas is not None:
@@ -1156,7 +1177,7 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
                                 sm["score_team_a"], sm["score_team_b"], sm["set_scores_json"], max(sm["games_winner"], sm["score_team_a"]), min(sm["games_loser"], sm["score_team_b"]),
                                 out["ta_r"], out["tb_r"], out["ea"], out["applied_m_c"], out["mov"],
                                 out["res"][0]["delta"], out["res"][2]["delta"] if not is_sing else 0.0,
-                                out["res"][1]["delta"], out["res"][3]["delta"] if not is_sing else 0.0, json.dumps(all_guardrails), ts))
+                                out["res"][1]["delta"], out["res"][3]["delta"] if not is_singles else 0.0, json.dumps(all_guardrails), ts))
 
                             for pr in out["res"]:
                                 conn.execute("""UPDATE players SET latent_mmr=?, display_rating=?, rating_deviation=?, rating_accuracy_pct=?, calibration_tier=?, is_provisional=?, consecutive_losses=?, rolling_90d_peak=max(rolling_90d_peak, ?), rolling_180d_peak=max(rolling_180d_peak, ?), rolling_365d_peak=max(rolling_365d_peak, ?), last_match_time=? WHERE player_id=?""",
@@ -1430,7 +1451,6 @@ elif nav == "👥 Player Roster & Calibration":
             in_cats = ["Beginner (0.500)", "Beginner+ (1.000)", "Intermediate (2.500)", "Intermediate+ (3.500)", "Advanced (4.500)", "Pro (5.500)", "Elite (6.300)"]
             in_pick = st.selectbox("Base Calibration Category", in_cats, key="reg_p_cat")
             
-            # Non-blocking Cascading Dropdowns
             all_countries = conn.execute("SELECT DISTINCT country_code FROM locations WHERE location_type = 'COUNTRY'").fetchall()
             country_codes = [c["country_code"] for c in all_countries]
             if not country_codes:
@@ -1690,7 +1710,7 @@ elif nav == "⚙️ Global Config":
                     fc1, fc2, fc3 = st.columns([3, 2, 2])
                     fc1.write(f"**{fmt['format_name']}** (`{fmt['format_id']}`)")
                     fc2.caption(f"Category: {fmt['category']}")
-                    updated_mc[fmt["format_id"]] = fc3.number_input("Weight", 0.10, 1.50, float(fmt["mc_weight"]), 0.05, key=f"mc_{fmt['format_id']}")
+                    updated_mc[fmt["format_id"]] = new_mc = fc3.number_input("Weight", 0.10, 1.50, float(fmt["mc_weight"]), 0.05, key=f"mc_{fmt['format_id']}")
                 if st.form_submit_button("Save Format Confidence Weights ($M_C$)"):
                     for fid, weight in updated_mc.items(): conn.execute("UPDATE match_formats SET mc_weight = ? WHERE format_id = ?", (weight, fid))
                     conn.commit(); st.success("Format weights committed!"); st.rerun()

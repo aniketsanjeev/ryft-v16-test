@@ -7,6 +7,7 @@ import io
 from datetime import datetime, timezone, date, time
 import pandas as pd
 
+# Optional ReportLab import for PDF generation
 try:
     from reportlab.lib.pagesizes import letter
     from reportlab.lib import colors
@@ -93,11 +94,6 @@ def init_db():
     fmt = [("STD_B03", "Best of 3 Sets", "MULTI_SET", 1.00, None, None, 0, 1), ("RACE_6", "Race to 6 Games", "RACE_GAMES", 0.70, 6, None, 0, 1), ("AMER_24", "Americano 24 Points", "AMERICANO", 0.30, None, 24, 1, 1), ("MEX_24", "Mexicano 24 Points", "MEXICANO", 0.30, None, 24, 1, 1)]
     for fi, fn, cat, mc, tg, tp, isb, ia in fmt: c.execute("INSERT OR IGNORE INTO match_formats VALUES (?,?,?,?,?,?,?,?)", (fi, fn, cat, mc, tg, tp, isb, ia))
 
-    seed_factory_parameters(c, overwrite_existing=False)
-    conn.commit()
-    conn.close()
-
-def seed_factory_parameters(cursor, overwrite_existing=False):
     master_params = [
         ("R_MIN", 0.000, 1, "Scale Absolute Floor", "Lowest possible rating.", "Clamps rating drops at 0.000.", "1. Core Bounds & Drag"),
         ("R_MAX", 7.000, 1, "Scale Absolute Ceiling", "Maximum rating ceiling.", "LOCKED at 7.000.", "1. Core Bounds & Drag"),
@@ -151,9 +147,10 @@ def seed_factory_parameters(cursor, overwrite_existing=False):
     ]
     for k, v, act, tit, desc, tune, grp in master_params:
         if overwrite_existing:
-            cursor.execute("INSERT INTO global_config VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(param_key) DO UPDATE SET param_value=excluded.param_value, is_active=excluded.is_active", (k, v, act, tit, desc, tune, grp))
+            c.execute("INSERT INTO global_config VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(param_key) DO UPDATE SET param_value=excluded.param_value, is_active=excluded.is_active", (k, v, act, tit, desc, tune, grp))
         else:
-            cursor.execute("INSERT INTO global_config VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(param_key) DO UPDATE SET title=excluded.title, description=excluded.description, tuning_guide=excluded.tuning_guide, module_group=excluded.module_group", (k, v, act, tit, desc, tune, grp))
+            c.execute("INSERT INTO global_config VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(param_key) DO UPDATE SET title=excluded.title, description=excluded.description, tuning_guide=excluded.tuning_guide, module_group=excluded.module_group", (k, v, act, tit, desc, tune, grp))
+    conn.commit(); conn.close()
 
 init_db()
 
@@ -487,7 +484,28 @@ def build_pdf_document():
     return buf.read()
 
 # ==============================================================================
-# 4. TAB ROUTING
+# 4. GLOBAL UI & SIDEBAR INITIALIZATION
+# ==============================================================================
+st.set_page_config(page_title="RYFT Engine V.16 Master", layout="wide")
+st.sidebar.markdown("""<div style="text-align: center; padding: 10px 0 15px 0;"><svg width="220" height="55" viewBox="0 0 400 100" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="ryftBlue" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#0284c7;stop-opacity:1" /><stop offset="100%" style="stop-color:#1d4ed8;stop-opacity:1" /></linearGradient></defs><text x="15" y="75" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="82" font-weight="900" font-style="italic" fill="url(#ryftBlue)" letter-spacing="-3">RYFT</text><rect x="225" y="28" width="80" height="30" rx="6" fill="#0f172a" /><text x="238" y="50" font-family="monospace" font-size="18" font-weight="700" fill="#38bdf8">V.16.4</text></svg></div>""", unsafe_allow_html=True)
+
+# SINGLE GLOBAL NAVIGATION DEFINITION GUARANTEES NAV EXISTS BEFORE USE
+nav = st.sidebar.radio("Navigation Console", [
+    "📊 The Dashboard",
+    "🎾 Log Matches",
+    "🗓️ Club Sessions & Mixers",
+    "🧠 Session Logic (V16.2 PROD)",
+    "🏆 Tournament Desk (Delayed)",
+    "📜 Historical Matches",
+    "👥 Player Roster & Calibration",
+    "🏢 Venues & Regions",
+    "🌐 Hawking Engine",
+    "⚙️ Global Config",
+    "📄 RYFT Documentation"
+])
+
+# ==============================================================================
+# 5. CONSOLE TAB ROUTING
 # ==============================================================================
 if nav == "📊 The Dashboard":
     st.title("System Command Center & Macro Health")
@@ -871,7 +889,8 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
                                     sets_recorded.append((s2a, s2b))
                                     if st.checkbox("Deciding Set 3", key=f"s3_chk_{m['session_match_id']}"):
                                         s3c1, s3c2 = st.columns(2)
-                                        s3a = s3c1.number_input(f"Set 3: {ta_players}", 0, 7, 6, key=f"s3a_{m['session_match_id']}"); s3b = s3c2.number_input(f"Set 3: {tb_players}", 0, 7, 4, key=f"s3b_{m['session_match_id']}")
+                                        s3a = s3c1.number_input(f"Set 3: {ta_players}", 0, 7, 6, key=f"s3a_{m['session_match_id']}")
+                                        s3b = s3c2.number_input(f"Set 3: {tb_players}", 0, 7, 4, key=f"s3b_{m['session_match_id']}")
                                         sets_recorded.append((s3a, s3b))
                                     sa, sb = sum(1 for s in sets_recorded if s[0]>s[1]), sum(1 for s in sets_recorded if s[1]>s[0])
                                     gw, gl = sum(x[0] for x in sets_recorded), sum(x[1] for x in sets_recorded)
@@ -1028,6 +1047,7 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
                 df_stand = pd.DataFrame(list(standings.values())).sort_values(by=["Won", "Diff", "Points Won"], ascending=[False, False, False])
                 st.markdown("#### 🏆 Session Standings")
                 st.dataframe(df_stand, use_container_width=True)
+                st.caption("Tiebreakers evaluated dynamically: Match Wins -> Point/Game Differential -> Total Points Won.")
 
                 st.markdown("---")
                 st.markdown("#### 🔬 Sequential Pre/Post Session Audit")
@@ -1329,7 +1349,7 @@ elif nav == "🏆 Tournament Desk (Delayed)":
 
                         for pr in out["res"]:
                             pid, delta = pr["pid"], pr["delta"]
-                            conn.execute("UPDATE players SET latent_mmr = latent_mmr + ?, display_rating = display_rating + ?, tournament_floor = max(tournament_floor, latent_mmr + ?), rolling_90d_peak = max(rolling_90d_peak, latent_mmr + ?), rolling_180d_peak = max(rolling_180d_peak, latent_mmr + ?) WHERE player_id=?", (delta, delta, delta, delta, delta, pid))
+                            conn.execute("UPDATE players SET latent_mmr = latent_mmr + ?, display_rating = display_rating + ?, tournament_floor = max(tournament_floor, latent_mmr + ?), rolling_90d_peak = max(rolling_90d_peak, latent_mmr + ?), rolling_180d_peak = max(rolling_180d_peak, latent_mmr + ?) WHERE player_id=?""", (delta, delta, delta, delta, delta, pid))
                             conn.execute("INSERT INTO match_logs (log_id, match_id, player_id, pre_latent_mmr, post_latent_mmr, pre_display_rating, post_display_rating, pre_rd, post_rd, pre_accuracy_pct, post_accuracy_pct, delta_r, is_retroactive, guardrails_triggered, logged_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
                                          (f"L_{pid}_{m_id}", m_id, pid, pr["pre_r"], pr["post_r"], pr["pre_disp"], pr["post_disp"], pr["pre_rd"], pr["post_rd"], pr["pre_acc"], pr["acc"], delta, json.dumps(pr["flags"]), ts))
                     conn.execute("UPDATE tournaments SET status='COMMITTED' WHERE tourney_id=?", (t_id,))

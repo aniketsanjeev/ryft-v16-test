@@ -114,8 +114,6 @@ def init_db():
         ("ICE_OUT_MULT_TIER_2", 0.05, 1, "Ice-Out Dampener 2", "Multiplier applied if Tier 2 Gap breached.", "0.05 = 95% loss reduction.", "4. Partner Guardrails"),
         ("ANTI_CARRY_GAP_TIER_1", 1.75, 1, "Anti-Carry Gap Threshold 1", "Min gap to trigger 50% carry dampening.", "Applies to weaker partner.", "4. Partner Guardrails"),
         ("ANTI_CARRY_MULT_TIER_1", 0.50, 1, "Anti-Carry Dampener 1", "Multiplier applied if Tier 1 carry breached.", "0.50 = 50% gain reduction.", "4. Partner Guardrails"),
-        ("ANTI_CARRY_GAP_TIER_2", 2.50, 1, "Anti-Carry Gap Threshold 2", "Min gap to trigger 25% carry dampening.", "Extreme tow jobs.", "4. Partner Guardrails"),
-        ("ANTI_CARRY_MULT_TIER_2", 0.25, 1, "Anti-Carry Dampener 2", "Multiplier applied if Tier 2 carry breached.", "0.25 = 75% gain reduction.", "4. Partner Guardrails"),
         ("MAX_24H_EXCHANGE_CAP", 0.150, 1, "24H Casual Cap", "Net transfer ceiling.", "Prevents farming.", "5. Exchange Caps & Security"),
         ("PROVISIONAL_CAP_MULTIPLIER", 2.5, 1, "Provisional Cap Relaxer", "Multiplier on 24H cap for PRs.", "Allows 0.375 point movement.", "5. Exchange Caps & Security"),
         ("SESSION_EXCHANGE_CAP", 0.300, 1, "Verified Session Cap", "Cap for verified club events.", "Doubles point limits for mixers.", "5. Exchange Caps & Security"),
@@ -146,10 +144,7 @@ def init_db():
         ("CIRCUIT_BREAKER", 0.0250, 1, "Auto Cron Safety Ceiling", "Max shift per weekly cycle.", "Limits automated macro shifts.", "8. Hawking Macro")
     ]
     for k, v, act, tit, desc, tune, grp in master_params:
-        if overwrite_existing:
-            c.execute("INSERT INTO global_config VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(param_key) DO UPDATE SET param_value=excluded.param_value, is_active=excluded.is_active", (k, v, act, tit, desc, tune, grp))
-        else:
-            c.execute("INSERT INTO global_config VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(param_key) DO UPDATE SET title=excluded.title, description=excluded.description, tuning_guide=excluded.tuning_guide, module_group=excluded.module_group", (k, v, act, tit, desc, tune, grp))
+        c.execute("INSERT INTO global_config VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(param_key) DO UPDATE SET title=excluded.title, description=excluded.description, tuning_guide=excluded.tuning_guide, module_group=excluded.module_group", (k, v, act, tit, desc, tune, grp))
     conn.commit(); conn.close()
 
 init_db()
@@ -268,7 +263,7 @@ class RyftV16:
                     rust_c = cfg.get("INACTIVITY_CONSTANT", 12.0) / 30.0
                     rd = min(350.0, math.sqrt(rd**2 + (rust_c**2 * delta_t_days)))
                     if rd > 100.0 and p.get("calibration_tier") == "VERIFIED": flags.append("[ALERT_INACTIVITY_REPROVISION_FLAG]")
-                except: pass
+                except Exception: pass
             
             g_opp = 1.0 / math.sqrt(1.0 + (3.0 * (q**2) * (opp_rd**2)) / (math.pi**2))
             
@@ -306,7 +301,7 @@ class RyftV16:
                         raw_d *= dd
                         if dd < 1.00: flags.append(f"ANTI_CARRY ({int((1-dd)*100)}%)")
 
-            # Bit 16 Sybil Trust Bypass (<5 matches)
+            # Bit 16: Sybil Trust Bypass (<5 matches)
             m_played = int(p.get("verified_matches_count", 0))
             w_g = 1.0
             if m_played >= 5:
@@ -323,8 +318,10 @@ class RyftV16:
                 final_d = raw_d * t_mult; flags.append(f"TOURNAMENT ({t_mult}x, Uncapped)")
             elif cumulative_deltas is not None:
                 cum_d = cumulative_deltas.get(p["player_id"], 0.0)
-                final_d = max(-cap - cum_d, min(cap - cum_d, raw_d))
-                if abs(cum_d + raw_d) > cap: flags.append("SESSION_CUMULATIVE_CAP_ENFORCED")
+                target_cum = cum_d + raw_d
+                capped_target = max(-cap, min(cap, target_cum))
+                final_d = capped_target - cum_d
+                if abs(target_cum) > cap: flags.append("SESSION_CUMULATIVE_CAP_ENFORCED")
             else:
                 final_d = max(-cap, min(cap, raw_d))
                 if abs(raw_d) > cap: flags.append("CAP_ENFORCED")
@@ -489,7 +486,6 @@ def build_pdf_document():
 st.set_page_config(page_title="RYFT Engine V.16 Master", layout="wide")
 st.sidebar.markdown("""<div style="text-align: center; padding: 10px 0 15px 0;"><svg width="220" height="55" viewBox="0 0 400 100" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="ryftBlue" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#0284c7;stop-opacity:1" /><stop offset="100%" style="stop-color:#1d4ed8;stop-opacity:1" /></linearGradient></defs><text x="15" y="75" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="82" font-weight="900" font-style="italic" fill="url(#ryftBlue)" letter-spacing="-3">RYFT</text><rect x="225" y="28" width="80" height="30" rx="6" fill="#0f172a" /><text x="238" y="50" font-family="monospace" font-size="18" font-weight="700" fill="#38bdf8">V.16.4</text></svg></div>""", unsafe_allow_html=True)
 
-# SINGLE GLOBAL NAVIGATION DEFINITION GUARANTEES NAV EXISTS BEFORE USE
 nav = st.sidebar.radio("Navigation Console", [
     "📊 The Dashboard",
     "🎾 Log Matches",
@@ -889,8 +885,7 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
                                     sets_recorded.append((s2a, s2b))
                                     if st.checkbox("Deciding Set 3", key=f"s3_chk_{m['session_match_id']}"):
                                         s3c1, s3c2 = st.columns(2)
-                                        s3a = s3c1.number_input(f"Set 3: {ta_players}", 0, 7, 6, key=f"s3a_{m['session_match_id']}")
-                                        s3b = s3c2.number_input(f"Set 3: {tb_players}", 0, 7, 4, key=f"s3b_{m['session_match_id']}")
+                                        s3a = s3c1.number_input(f"Set 3: {ta_players}", 0, 7, 6, key=f"s3a_{m['session_match_id']}"); s3b = s3c2.number_input(f"Set 3: {tb_players}", 0, 7, 4, key=f"s3b_{m['session_match_id']}")
                                         sets_recorded.append((s3a, s3b))
                                     sa, sb = sum(1 for s in sets_recorded if s[0]>s[1]), sum(1 for s in sets_recorded if s[1]>s[0])
                                     gw, gl = sum(x[0] for x in sets_recorded), sum(x[1] for x in sets_recorded)
@@ -1349,7 +1344,7 @@ elif nav == "🏆 Tournament Desk (Delayed)":
 
                         for pr in out["res"]:
                             pid, delta = pr["pid"], pr["delta"]
-                            conn.execute("UPDATE players SET latent_mmr = latent_mmr + ?, display_rating = display_rating + ?, tournament_floor = max(tournament_floor, latent_mmr + ?), rolling_90d_peak = max(rolling_90d_peak, latent_mmr + ?), rolling_180d_peak = max(rolling_180d_peak, latent_mmr + ?) WHERE player_id=?""", (delta, delta, delta, delta, delta, pid))
+                            conn.execute("UPDATE players SET latent_mmr = latent_mmr + ?, display_rating = display_rating + ?, tournament_floor = max(tournament_floor, latent_mmr + ?), rolling_90d_peak = max(rolling_90d_peak, latent_mmr + ?), rolling_180d_peak = max(rolling_180d_peak, latent_mmr + ?) WHERE player_id=?", (delta, delta, delta, delta, delta, pid))
                             conn.execute("INSERT INTO match_logs (log_id, match_id, player_id, pre_latent_mmr, post_latent_mmr, pre_display_rating, post_display_rating, pre_rd, post_rd, pre_accuracy_pct, post_accuracy_pct, delta_r, is_retroactive, guardrails_triggered, logged_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
                                          (f"L_{pid}_{m_id}", m_id, pid, pr["pre_r"], pr["post_r"], pr["pre_disp"], pr["post_disp"], pr["pre_rd"], pr["post_rd"], pr["pre_acc"], pr["acc"], delta, json.dumps(pr["flags"]), ts))
                     conn.execute("UPDATE tournaments SET status='COMMITTED' WHERE tourney_id=?", (t_id,))
@@ -1431,40 +1426,43 @@ elif nav == "👥 Player Roster & Calibration":
     col_add, col_edit = st.columns(2)
     with col_add:
         with st.expander("➕ Register New Player", expanded=False):
-            p_name = st.text_input("Full Name", key="add_p_name")
+            p_name = st.text_input("Full Name", key="reg_p_name")
             in_cats = ["Beginner (0.500)", "Beginner+ (1.000)", "Intermediate (2.500)", "Intermediate+ (3.500)", "Advanced (4.500)", "Pro (5.500)", "Elite (6.300)"]
-            in_pick = st.selectbox("Base Calibration Category", in_cats, key="add_p_cat")
+            in_pick = st.selectbox("Base Calibration Category", in_cats, key="reg_p_cat")
             
             # Non-blocking Cascading Dropdowns
-            countries = conn.execute("SELECT DISTINCT country_code FROM locations WHERE location_type = 'CITY'").fetchall()
-            c_codes = [c["country_code"] for c in countries] if countries else ['IND']
-            sel_co = st.selectbox("Home Country", c_codes, key="add_p_co")
+            all_countries = conn.execute("SELECT DISTINCT country_code FROM locations WHERE location_type = 'COUNTRY'").fetchall()
+            country_codes = [c["country_code"] for c in all_countries]
+            if not country_codes:
+                c_from_cities = conn.execute("SELECT DISTINCT country_code FROM locations WHERE location_type = 'CITY'").fetchall()
+                country_codes = [c["country_code"] for c in c_from_cities] if c_from_cities else ["IND"]
+            sel_country = st.selectbox("Home Country", country_codes, key="reg_p_country")
             
-            cities = conn.execute("SELECT location_id, location_name FROM locations WHERE location_type = 'CITY' AND country_code = ?", (sel_co,)).fetchall()
-            city_map = {c["location_name"]: c["location_id"] for c in cities}
-            sel_ci = st.selectbox("Home City", list(city_map.keys()) if city_map else ["None"], key="add_p_ci")
+            cities = conn.execute("SELECT location_id, location_name FROM locations WHERE location_type = 'CITY' AND country_code = ?", (sel_country,)).fetchall()
+            city_dict = {c["location_name"]: c["location_id"] for c in cities}
+            c_sel = st.selectbox("Home City", list(city_dict.keys()) if city_dict else ["None"], key="reg_p_city")
             
-            venues = conn.execute("SELECT venue_id, venue_name FROM venues WHERE is_active = 1 AND city_id = ?", (city_map.get(sel_ci),)).fetchall() if city_map else []
-            v_map = {v["venue_name"]: v["venue_id"] for v in venues}
-            sel_ve = st.selectbox("Home Club / Venue (Optional)", ["None"] + list(v_map.keys()), key="add_p_ve")
+            venues = conn.execute("SELECT venue_id, venue_name FROM venues WHERE is_active = 1 AND city_id = ?", (city_dict.get(c_sel),)).fetchall() if c_sel and c_sel != "None" else []
+            v_dict_local = {v["venue_name"]: v["venue_id"] for v in venues}
+            v_sel = st.selectbox("Home Club / Venue (Optional)", ["None"] + list(v_dict_local.keys()), key="reg_p_venue")
 
             c_a1, c_a2 = st.columns(2)
-            is_anc = c_a1.checkbox("System Anchor", key="add_p_anc")
-            is_ceil = c_a2.checkbox("Ceiling Anchor", key="add_p_ceil")
+            is_anc = c_a1.checkbox("System Anchor", key="reg_p_anc")
+            is_ceil = c_a2.checkbox("Ceiling Anchor", key="reg_p_ceil")
 
-            if st.button("Commit Registration", type="primary"):
-                if not city_map: st.error("Create at least one City in 'Venues & Regions' first.")
+            if st.button("Commit Registration", type="primary", key="btn_reg_player"):
+                if not city_dict or c_sel == "None": st.error("Create at least one City in 'Venues & Regions' first.")
                 elif not p_name: st.error("Player name cannot be blank.")
                 else:
                     base_map = {"Beginner (0.500)": 0.500, "Beginner+ (1.000)": 1.000, "Intermediate (2.500)": 2.500, "Intermediate+ (3.500)": 3.500, "Advanced (4.500)": 4.500, "Pro (5.500)": 5.500, "Elite (6.300)": 6.300}
                     base_r = base_map[in_pick]
-                    v_id = v_map.get(sel_ve)
+                    v_id = v_dict_local.get(v_sel) if v_sel != "None" else None
                     p_uuid = f"P_{datetime.now().strftime('%d%H%M%S')}"
 
                     conn.execute("""
                         INSERT INTO players (player_id, display_name, initial_rating, home_venue_id, home_city_id, home_country_code, latent_mmr, display_rating, rolling_90d_peak, rolling_180d_peak, rolling_365d_peak, tournament_floor, all_time_badge, rating_deviation, rating_accuracy_pct, accuracy_s_rd, accuracy_s_matches, accuracy_s_diversity, calibration_tier, is_provisional, is_manually_verified, is_anchor, is_ceiling_anchor, created_at)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0.0, ?, 350.0, 0.0, 0.0, 0.0, 0.0, 'PROVISIONAL', 1, 0, ?, ?, ?)
-                    """, (p_uuid, p_name, base_r, v_id, city_map[sel_ci], sel_co, base_r, base_r, base_r, base_r, base_r, in_pick.split(" ")[0], 1 if is_anc else 0, 1 if is_ceil else 0, datetime.now(timezone.utc).isoformat()))
+                    """, (p_uuid, p_name, base_r, v_id, city_dict[c_sel], sel_country, base_r, base_r, base_r, base_r, base_r, in_pick.split(" ")[0], 1 if is_anc else 0, 1 if is_ceil else 0, datetime.now(timezone.utc).isoformat()))
                     conn.commit(); st.success(f"Registered {p_name} (PR) at {base_r:.3f}!"); st.rerun()
 
     with col_edit:
@@ -1478,9 +1476,11 @@ elif nav == "👥 Player Roster & Calibration":
                 c_e = float(p_data.get("graph_centrality", 0.20)); u_opps = float(p_data.get("unique_opponents_count", 0))
                 w_g = 1.0 if int(p_data.get("verified_matches_count", 0)) < 5 else min(1.0, c_e / 0.20) * min(1.0, u_opps / 5.0)
 
+                init_cat, _, _, _ = RyftV16.get_cat_for_rating(p_data['initial_rating'], conn=conn)
+
                 c1, c2, c3 = st.columns(3)
                 c1.metric("Current MMR", f"{p_data['latent_mmr']:.3f} ({p_data['all_time_badge']})")
-                c2.metric("Initial Snapshot", f"{p_data['initial_rating']:.3f}")
+                c2.metric("Initial Snapshot", f"{p_data['initial_rating']:.3f} ({init_cat})")
                 c3.metric("Sybil Trust (W_G)", f"{w_g*100:.1f}%")
 
                 st.write("**Tri-Gate Status:**")
@@ -1501,7 +1501,7 @@ elif nav == "👥 Player Roster & Calibration":
                         cat_str, _, _, _ = RyftV16.get_cat_for_rating(e_mmr, conn=conn)
                         conn.execute("UPDATE players SET display_name=?, latent_mmr=?, display_rating=?, rating_deviation=?, is_manually_verified=?, is_anchor=?, is_ceiling_anchor=?, all_time_badge=? WHERE player_id=?", (e_name, e_mmr, e_mmr, e_rd, 1 if e_man_ver else 0, 1 if e_anc else 0, 1 if e_ceil else 0, cat_str, p_pick))
                         if e_man_ver: conn.execute("UPDATE players SET calibration_tier = 'VERIFIED', is_provisional = 0 WHERE player_id = ?", (p_pick,))
-                        conn.commit(); st.success("Player updated!"); st.rerun()
+                        conn.commit(); st.success("Player updated & Database Synced!"); st.rerun()
 
                 c_del1, c_del2 = st.columns(2)
                 if c_del1.button("Deactivate (Soft Delete)"):
@@ -1551,7 +1551,7 @@ elif nav == "🏢 Venues & Regions":
         co_code = st.text_input("ISO 3-Letter Code", key="aco_code").upper()
         if st.button("Register Country", type="primary"):
             if co_name and co_code:
-                conn.execute("INSERT INTO locations (location_id, location_type, location_name, country_code, updated_at) VALUES (?, 'COUNTRY', ?, ?, ?)", (f"LOC_{co_code}", co_name, co_code, datetime.now(timezone.utc).isoformat()))
+                conn.execute("INSERT INTO locations (location_id, location_type, location_name, country_code, updated_at) VALUES (?, 'COUNTRY', ?, ?, ?)""", (f"LOC_{co_code}", co_name, co_code, datetime.now(timezone.utc).isoformat()))
                 conn.commit(); st.success(f"Added {co_name}!"); st.rerun()
 
     st.markdown("---")

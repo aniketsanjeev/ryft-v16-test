@@ -90,7 +90,7 @@ def init_db():
         cats = [("Beginner", 0.0, 0.999, 1, 1.0), ("Beginner+", 1.0, 1.999, 2, 1.0), ("Intermediate", 2.0, 3.499, 3, 1.0), ("Intermediate+", 3.5, 4.499, 4, 1.0), ("Advanced", 4.5, 5.499, 5, 1.0), ("Pro", 5.5, 6.299, 6, 1.0), ("Elite", 6.3, 7.0, 7, 1.0)]
         for cn, cmn, cmx, so, sm in cats: c.execute("INSERT OR IGNORE INTO rating_categories VALUES (?,?,?,?,?)", (cn, cmn, cmx, so, sm))
 
-    # All 18 Official V.16 Formats
+    # All 18 Official V.16 Match Formats
     official_formats = [
         ("STD_B03", "Best of 3 Sets", "MULTI_SET", 1.00, None, None, 0, 1),
         ("STD_B05", "Best of 5 Sets", "MULTI_SET", 1.00, None, None, 0, 1),
@@ -285,7 +285,6 @@ class RyftV16:
             r, rd, prov = float(p.get("latent_mmr", 3.0)), float(p.get("rating_deviation", 350.0)), bool(p.get("is_provisional", 1))
             is_manual_override = bool(p.get("is_manually_verified", 0))
             is_quar = bool(p.get("is_quarantined", 0))
-            is_anchor_player = bool(p.get("is_anchor", 0)) or (p.get("calibration_tier") == "ANCHOR") or (not prov and rd <= 100.0)
             won = (is_a and s_a > s_b) or (not is_a and s_b > s_a)
             
             q, sig = 0.0057565, cfg.get("RD_INFO_VARIANCE", 65.0)
@@ -302,18 +301,19 @@ class RyftV16:
             
             g_opp = 1.0 / math.sqrt(1.0 + (3.0 * (q**2) * (opp_rd**2)) / (math.pi**2))
 
-            # Standard Einstein delta baseline
-            if is_anchor_player:
-                k_base = cfg.get("K_MIN", 0.080)
-            else:
-                k_base = cfg.get("K_MAX", 0.400) - (r / cfg.get("R_MAX", 7.000)) * (cfg.get("K_MAX", 0.400) - cfg.get("K_MIN", 0.080))
-            
+            # Continuous Individual Volatility (Bit 7) & Continuous Linear Scale Compression / Elite Drag (Bit 8)
+            k_ind = cfg.get("K_MAX", 0.400) - (r / cfg.get("R_MAX", 7.000)) * (cfg.get("K_MAX", 0.400) - cfg.get("K_MIN", 0.080))
             _, _, _, cat_speed = cls.get_cat_for_rating(r, conn=conn)
-            if cat_speed != 1.00: k_base *= cat_speed; flags.append(f"CAT_SPEED ({cat_speed:.2f}x)")
-            drag = ((7.000 - r) / 7.000) * ((7.000 - r) / (7.000 - 6.300))**2.5 if r >= 6.300 else 1.0
-            if r >= 6.300: flags.append("[ALERT_ELITE_DRAG_MAX_RESISTANCE]")
+            if cat_speed != 1.00:
+                k_ind *= cat_speed
+                flags.append(f"CAT_SPEED ({cat_speed:.2f}x)")
+
+            decay_ind = ((7.000 - r) / 7.000) * (((7.000 - r) / (7.000 - 6.300))**2.5) if r >= 6.300 else ((7.000 - r) / 7.000)
+            if r >= 6.300:
+                flags.append("[ALERT_ELITE_DRAG_MAX_RESISTANCE]")
+
             direction = 1.0 if is_a else -1.0
-            standard_einstein_delta = k_base * drag * mc * s_margin * g_opp * direction * (act_a - ea)
+            standard_einstein_delta = k_ind * decay_ind * mc * s_margin * g_opp * direction * (act_a - ea)
 
             opp_team_r = tb_r if is_a else ta_r
             partner_gap = abs(r - float(partner.get("latent_mmr", 3.0))) if (not is_singles and partner) else 0.0

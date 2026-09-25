@@ -7,7 +7,6 @@ import io
 from datetime import datetime, timezone, date, time
 import pandas as pd
 
-# Optional ReportLab import for PDF generation
 try:
     from reportlab.lib.pagesizes import letter
     from reportlab.lib import colors
@@ -91,7 +90,7 @@ def init_db():
         cats = [("Beginner", 0.0, 0.999, 1, 1.0), ("Beginner+", 1.0, 1.999, 2, 1.0), ("Intermediate", 2.0, 3.499, 3, 1.0), ("Intermediate+", 3.5, 4.499, 4, 1.0), ("Advanced", 4.5, 5.499, 5, 1.0), ("Pro", 5.5, 6.299, 6, 1.0), ("Elite", 6.3, 7.0, 7, 1.0)]
         for cn, cmn, cmx, so, sm in cats: c.execute("INSERT OR IGNORE INTO rating_categories VALUES (?,?,?,?,?)", (cn, cmn, cmx, so, sm))
 
-    # All 18 Official Formats Active for Standalone & Session Workflows
+    # All 18 Official V.16 Match Formats
     official_formats = [
         ("STD_B03", "Best of 3 Sets", "MULTI_SET", 1.00, None, None, 0, 1),
         ("STD_B05", "Best of 5 Sets", "MULTI_SET", 1.00, None, None, 0, 1),
@@ -302,53 +301,79 @@ class RyftV16:
                 except Exception: pass
             
             g_opp = 1.0 / math.sqrt(1.0 + (3.0 * (q**2) * (opp_rd**2)) / (math.pi**2))
+
+            # Standard Einstein delta baseline
+            if is_anchor_player:
+                k_base = cfg.get("K_MIN", 0.080)
+            else:
+                k_base = cfg.get("K_MAX", 0.400) - (r / cfg.get("R_MAX", 7.000)) * (cfg.get("K_MAX", 0.400) - cfg.get("K_MIN", 0.080))
             
+            _, _, _, cat_speed = cls.get_cat_for_rating(r, conn=conn)
+            if cat_speed != 1.00: k_base *= cat_speed; flags.append(f"CAT_SPEED ({cat_speed:.2f}x)")
+            drag = ((7.000 - r) / 7.000) * ((7.000 - r) / (7.000 - 6.300))**2.5 if r >= 6.300 else 1.0
+            if r >= 6.300: flags.append("[ALERT_ELITE_DRAG_MAX_RESISTANCE]")
+            direction = 1.0 if is_a else -1.0
+            standard_einstein_delta = k_base * drag * mc * s_margin * g_opp * direction * (act_a - ea)
+
+            opp_team_r = tb_r if is_a else ta_r
+            partner_gap = abs(r - float(partner.get("latent_mmr", 3.0))) if (not is_singles and partner) else 0.0
+
             if is_quar:
                 raw_d = 0.000; flags.append("[ALERT_QUARANTINE_ISOLATION_ACTIVE]")
-            elif prov and s_a != s_b:
-                opp_team_r = tb_r if is_a else ta_r
-                ratio = (g_w_raw + 0.5) / (g_l_raw + 0.5) if won else (g_l_raw + 0.5) / (g_w_raw + 0.5)
-                r_perf = opp_team_r + 2.0 * math.log10(ratio)
-                raw_d = (r_perf - r) * cfg.get("PROVISIONAL_ABSORPTION_ALPHA", 0.45) * mc * g_opp
-                max_d = cfg.get("MAX_PROVISIONAL_DELTA", 0.750)
-                raw_d = max(-max_d, min(max_d, raw_d))
-                flags.append("RIGHTSIZING_INTERPOLATION")
-            else:
-                # Anchor Loss Cushioning: Anchors locked to K_MIN (0.080) to buffer loss vs unrated smurfs
-                if is_anchor_player:
-                    k_base = cfg.get("K_MIN", 0.080)
+            elif won:
+                if prov and s_a != s_b:
+                    actual_game_ratio = (g_w_raw + 0.5) / (g_l_raw + 0.5)
+                    r_perf_team = opp_team_r + cfg.get("LOGISTIC_BETA", 2.0) * math.log10(actual_game_ratio)
+                    
+                    if not is_singles and partner and partner_gap >= 1.500 and r > float(partner.get("latent_mmr", 3.0)):
+                        # Anchor carrying a novice: Shield from negative delta on win!
+                        raw_d = max(0.0050, standard_einstein_delta)
+                        flags.append("[ALERT_ANCHOR_CARRY_WIN_SHIELD]")
+                    else:
+                        # Balanced PR pairs or solo PR: If they severely underperformed expected spread, allow downward pull
+                        raw_pr_delta = (r_perf_team - r) * cfg.get("PROVISIONAL_ABSORPTION_ALPHA", 0.45) * mc * g_opp
+                        max_d = cfg.get("MAX_PROVISIONAL_DELTA", 0.750)
+                        raw_d = max(-max_d, min(max_d, raw_pr_delta))
+                        flags.append("RIGHTSIZING_INTERPOLATION")
+                        if raw_d < 0:
+                            flags.append("[ALERT_OVERRATED_PR_WIN_DOWNWARD_PULL]")
                 else:
-                    k_base = cfg.get("K_MAX", 0.400) - (r / cfg.get("R_MAX", 7.000)) * (cfg.get("K_MAX", 0.400) - cfg.get("K_MIN", 0.080))
-                
-                _, _, _, cat_speed = cls.get_cat_for_rating(r, conn=conn)
-                if cat_speed != 1.00: k_base *= cat_speed; flags.append(f"CAT_SPEED ({cat_speed:.2f}x)")
-                drag = ((7.000 - r) / 7.000) * ((7.000 - r) / (7.000 - 6.300))**2.5 if r >= 6.300 else 1.0
-                if r >= 6.300: flags.append("[ALERT_ELITE_DRAG_MAX_RESISTANCE]")
-                raw_d = k_base * drag * mc * s_margin * g_opp * (1.0 if is_a else -1.0) * (act_a - ea)
+                    # Verified players strictly non-negative on wins
+                    raw_d = max(0.0010, standard_einstein_delta)
+            else:
+                # Defeat processing
+                if prov and s_a != s_b:
+                    actual_game_ratio = (g_l_raw + 0.5) / (g_w_raw + 0.5)
+                    r_perf_team = opp_team_r + cfg.get("LOGISTIC_BETA", 2.0) * math.log10(actual_game_ratio)
+                    raw_pr_delta = (r_perf_team - r) * cfg.get("PROVISIONAL_ABSORPTION_ALPHA", 0.45) * mc * g_opp
+                    max_d = cfg.get("MAX_PROVISIONAL_DELTA", 0.750)
+                    raw_d = max(-max_d, min(max_d, raw_pr_delta))
+                    flags.append("RIGHTSIZING_INTERPOLATION")
+                else:
+                    raw_d = standard_einstein_delta
 
             if not is_singles and partner and not is_quar:
                 gap = abs(r - float(partner.get("latent_mmr", 3.0)))
-                io_gap1, io_m1 = cfg.get("ICE_OUT_GAP_TIER_1", 1.50), cfg.get("ICE_OUT_MULT_TIER_1", 0.20)
-                io_gap2, io_m2 = cfg.get("ICE_OUT_GAP_TIER_2", 2.00), cfg.get("ICE_OUT_MULT_TIER_2", 0.05)
-                ac_gap1, ac_m1 = cfg.get("ANTI_CARRY_GAP_TIER_1", 1.75), cfg.get("ANTI_CARRY_MULT_TIER_1", 0.50)
-                
                 part_prov = bool(partner.get("is_provisional", 1))
                 part_rd = float(partner.get("rating_deviation", 350.0))
-                is_mutual_prov = (prov and part_prov and rd > 200.0 and part_rd > 200.0)
-
-                if is_mutual_prov:
+                
+                if prov and part_prov and rd > 200.0 and part_rd > 200.0:
                     flags.append("MUTUAL_PROV_EXEMPTION")
                 else:
                     if not won and r > float(partner.get("latent_mmr", 3.0)):
-                        dd = io_m2 if gap >= io_gap2 else (io_m1 if gap >= io_gap1 else (0.50 if gap >= 1.0 else 1.00))
+                        dd = cfg.get("ICE_OUT_MULT_TIER_2", 0.05) if gap >= cfg.get("ICE_OUT_GAP_TIER_2", 2.00) else (cfg.get("ICE_OUT_MULT_TIER_1", 0.20) if gap >= cfg.get("ICE_OUT_GAP_TIER_1", 1.50) else (0.50 if gap >= 1.0 else 1.00))
                         raw_d *= dd
                         if dd < 1.00: flags.append(f"[ALERT_ICE_OUT_ANCHOR_SHIELD] ({int((1-dd)*100)}%)")
                     elif won and r < float(partner.get("latent_mmr", 3.0)):
+                        ac_m1 = cfg.get("ANTI_CARRY_MULT_TIER_1", 0.50)
+                        ac_gap1 = cfg.get("ANTI_CARRY_GAP_TIER_1", 1.75)
                         dd = cfg.get("ANTI_CARRY_MULT_TIER_2", 0.25) if gap >= cfg.get("ANTI_CARRY_GAP_TIER_2", 2.50) else (ac_m1 if gap >= ac_gap1 else (0.75 if gap >= 1.2 else 1.00))
                         raw_d *= dd
                         if dd < 1.00: flags.append(f"ANTI_CARRY ({int((1-dd)*100)}%)")
+                        if not prov:
+                            raw_d = max(0.0010, raw_d)
 
-            # Bit 16: Sybil Trust Bypass (<5 matches)
+            # Bit 16 Sybil Trust Bypass (<5 matches)
             m_played = int(p.get("verified_matches_count", 0))
             w_g = 1.0
             if m_played >= 5:
@@ -361,7 +386,6 @@ class RyftV16:
             cap = base_cap * (cfg.get("PROVISIONAL_CAP_MULTIPLIER", 2.5) if prov else 1.0)
             
             # Gated Elevator Blowout Trigger for Placement Cap Bypass
-            opp_team_r = tb_r if is_a else ta_r
             is_elevator_active = (
                 prov and won and (raw_d > cap) and
                 (s_margin >= 1.00 or (g_w_raw >= 2 * g_l_raw and g_w_raw >= 4)) and
@@ -645,7 +669,6 @@ elif nav == "🎾 Log Matches":
     conn = get_db_connection()
     venues = conn.execute("SELECT * FROM venues WHERE is_active = 1").fetchall()
     players = conn.execute("SELECT * FROM players WHERE calibration_tier != 'INACTIVE' ORDER BY display_name").fetchall()
-    # Query all active match formats across all categories
     formats = conn.execute("SELECT * FROM match_formats WHERE is_active = 1 ORDER BY category, mc_weight DESC, target_games, total_points").fetchall()
     conn.close()
 
@@ -1009,8 +1032,7 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
                                     sets_recorded.append((s2a, s2b))
                                     if st.checkbox("Deciding Set 3", key=f"s3_chk_{m['session_match_id']}"):
                                         s3c1, s3c2 = st.columns(2)
-                                        s3a = s3c1.number_input(f"Set 3: {ta_players}", 0, 7, 6, key=f"s3a_{m['session_match_id']}")
-                                        s3b = s3c2.number_input(f"Set 3: {tb_players}", 0, 7, 4, key=f"s3b_{m['session_match_id']}")
+                                        s3a = s3c1.number_input(f"Set 3: {ta_players}", 0, 7, 6, key=f"s3a_{m['session_match_id']}"); s3b = s3c2.number_input(f"Set 3: {tb_players}", 0, 7, 4, key=f"s3b_{m['session_match_id']}")
                                         sets_recorded.append((s3a, s3b))
                                     sa, sb = sum(1 for s in sets_recorded if s[0]>s[1]), sum(1 for s in sets_recorded if s[1]>s[0])
                                     gw, gl = sum(x[0] for x in sets_recorded), sum(x[1] for x in sets_recorded)
@@ -1282,7 +1304,7 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
                                 sm["score_team_a"], sm["score_team_b"], sm["set_scores_json"], max(sm["games_winner"], sm["score_team_a"]), min(sm["games_loser"], sm["score_team_b"]),
                                 out["ta_r"], out["tb_r"], out["ea"], out["applied_m_c"], out["mov"],
                                 out["res"][0]["delta"], out["res"][2]["delta"] if not is_sing else 0.0,
-                                out["res"][1]["delta"], out["res"][3]["delta"] if not is_sing else 0.0, json.dumps(all_guardrails), ts))
+                                out["res"][1]["delta"], out["res"][3]["delta"] if not is_singles else 0.0, json.dumps(all_guardrails), ts))
 
                             for pr in out["res"]:
                                 conn.execute("""UPDATE players SET latent_mmr=?, display_rating=?, rating_deviation=?, rating_accuracy_pct=?, calibration_tier=?, is_provisional=?, consecutive_losses=?, rolling_90d_peak=max(rolling_90d_peak, ?), rolling_180d_peak=max(rolling_180d_peak, ?), rolling_365d_peak=max(rolling_365d_peak, ?), last_match_time=? WHERE player_id=?""",
@@ -1676,7 +1698,7 @@ elif nav == "🏢 Venues & Regions":
         co_code = st.text_input("ISO 3-Letter Code", key="aco_code").upper()
         if st.button("Register Country", type="primary"):
             if co_name and co_code:
-                conn.execute("INSERT INTO locations (location_id, location_type, location_name, country_code, updated_at) VALUES (?, 'COUNTRY', ?, ?, ?)", (f"LOC_{co_code}", co_name, co_code, datetime.now(timezone.utc).isoformat()))
+                conn.execute("INSERT INTO locations (location_id, location_type, location_name, country_code, updated_at) VALUES (?, 'COUNTRY', ?, ?, ?)""", (f"LOC_{co_code}", co_name, co_code, datetime.now(timezone.utc).isoformat()))
                 conn.commit(); st.success(f"Added {co_name}!"); st.rerun()
 
     st.markdown("---")
@@ -1815,7 +1837,7 @@ elif nav == "⚙️ Global Config":
                     fc1, fc2, fc3 = st.columns([3, 2, 2])
                     fc1.write(f"**{fmt['format_name']}** (`{fmt['format_id']}`)")
                     fc2.caption(f"Category: {fmt['category']}")
-                    updated_mc[fmt["format_id"]] = fc3.number_input("Weight", 0.10, 1.50, float(fmt["mc_weight"]), 0.05, key=f"mc_{fmt['format_id']}")
+                    updated_mc[fmt["format_id"]] = new_mc = fc3.number_input("Weight", 0.10, 1.50, float(fmt["mc_weight"]), 0.05, key=f"mc_{fmt['format_id']}")
                 if st.form_submit_button("Save Format Confidence Weights ($M_C$)"):
                     for fid, weight in updated_mc.items(): conn.execute("UPDATE match_formats SET mc_weight = ? WHERE format_id = ?", (weight, fid))
                     conn.commit(); st.success("Format weights committed!"); st.rerun()

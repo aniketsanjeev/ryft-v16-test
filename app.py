@@ -161,6 +161,7 @@ def seed_factory_parameters(cursor, overwrite_existing=False):
         ("RD_MAX", 350.0, 1, "Unrated Starting RD", "Uncertainty assigned at registration.", "Starting uncertainty.", "6. Uncertainty & Rust"),
         ("RD_INFO_VARIANCE", 65.0, 1, "Contraction Speed", "Denominator in RD shrinkage.", "Lower values shrink RD faster.", "6. Uncertainty & Rust"),
         ("INACTIVITY_CONSTANT", 12.0, 1, "Inactivity Rust Rate", "Monthly uncertainty growth.", "Points of RD regained per month.", "6. Uncertainty & Rust"),
+        ("TEMPORAL_DRIFT_CONSTANT", 1.5, 1, "Inactivity Drift Constant", "Daily uncertainty expansion constant (RD points per sqrt(day)).", "Default 1.5.", "6. Uncertainty & Rust"),
         ("COHORT_FACTOR_0_PROV", 1.00, 1, "Omega 0 Factor", "Contraction against verified anchors.", "100% gain.", "6. Uncertainty & Rust"),
         ("COHORT_FACTOR_1_PROV", 0.75, 1, "Omega 1 Factor", "Contraction with 1 unrated player.", "75% gain.", "6. Uncertainty & Rust"),
         ("COHORT_FACTOR_2_PROV", 0.50, 1, "Omega 2 Factor", "Contraction with 2 unrated players.", "50% gain.", "6. Uncertainty & Rust"),
@@ -270,6 +271,19 @@ class RyftV16:
         if owns: conn.commit(); conn.close()
 
     @staticmethod
+    def get_last_active_timestamp(player_id, current_ts_str, conn, fallback_ts=None):
+        if conn and current_ts_str:
+            row = conn.execute("""
+                SELECT MAX(m.match_timestamp)
+                FROM match_logs ml
+                JOIN matches m ON ml.match_id = m.match_id
+                WHERE ml.player_id = ? AND m.match_timestamp < ?
+            """, (player_id, current_ts_str)).fetchone()
+            if row and row[0]:
+                return row[0]
+        return fallback_ts
+
+    @staticmethod
     def get_rolling_24h_pairwise_delta(player_id, opponent_ids, current_ts_str, conn):
         """Calculates net rating points exchanged strictly against this specific opponent cluster in casual play (24h).
            Safeguarded against partner inversion: only evaluates matches where the opponent was on the opposing team."""
@@ -349,6 +363,46 @@ class RyftV16:
         is_draw = (s_a == s_b)
         g_w, g_l = max(g_w_raw, g_l_raw + (0 if is_draw else 1)), g_l_raw
         
+        # Parse match timestamp
+        effective_match_ts = match_timestamp or datetime.now(timezone.utc).isoformat()
+        try:
+            match_dt = datetime.fromisoformat(effective_match_ts.replace("Z", "+00:00"))
+        except Exception:
+            match_dt = datetime.now(timezone.utc)
+
+        # ----------------------------------------------------------------------
+        # INACTIVITY RUST EXPANSION (BITS 15 & 16) - PRE-EVALUATED FOR ALL PLAYERS
+        # ----------------------------------------------------------------------
+        all_on_court = [p1, p3] + ([p2, p4] if not is_singles else [])
+        for px in all_on_court:
+            stored_rd = float(px.get("rating_deviation", 350.0))
+            last_ts = cls.get_last_active_timestamp(
+                px["player_id"], effective_match_ts, conn,
+                fallback_ts=px.get("last_match_time") or px.get("created_at")
+            )
+            px_flags = []
+            if last_ts:
+                try:
+                    last_dt = datetime.fromisoformat(last_ts.replace("Z", "+00:00"))
+                    delta_days = max(0.0, (match_dt - last_dt).total_seconds() / 86400.0)
+                    c_drift = float(cfg.get("TEMPORAL_DRIFT_CONSTANT", 1.5))
+                    if delta_days >= 7.0:
+                        rust_rd = math.sqrt(stored_rd**2 + (c_drift**2) * delta_days)
+                        eff_rd = min(350.0, rust_rd)
+                        px_flags.append(f"[ALERT_INACTIVITY_RUST] ({int(delta_days)}d layoff)")
+                    else:
+                        eff_rd = stored_rd
+                except Exception:
+                    eff_rd = stored_rd
+            else:
+                eff_rd = stored_rd
+            
+            if eff_rd > 100.0 and px.get("calibration_tier") == "VERIFIED":
+                px_flags.append("[ALERT_INACTIVITY_REPROVISION_FLAG]")
+
+            px["effective_pre_rd"] = eff_rd
+            px["inactivity_flags"] = px_flags
+
         ta_r = float(p1.get("latent_mmr", 3.0)) if is_singles else ((float(p1.get("latent_mmr", 3.0))**p_exp + float(p2.get("latent_mmr", 3.0))**p_exp) / 2.0)**(1.0 / p_exp)
         tb_r = float(p3.get("latent_mmr", 3.0)) if is_singles else ((float(p3.get("latent_mmr", 3.0))**p_exp + float(p4.get("latent_mmr", 3.0))**p_exp) / 2.0)**(1.0 / p_exp)
         
@@ -363,8 +417,9 @@ class RyftV16:
         db_mc = float(fmt_row["mc_weight"]) if fmt_row else 1.00
         mc = float(cfg.get(f"MC_{fmt_id}", db_mc))
 
-        opp_rd_b = max(float(p3.get("rating_deviation", 350.0)), float(p4.get("rating_deviation", 350.0))) if not is_singles else float(p3.get("rating_deviation", 350.0))
-        opp_rd_a = max(float(p1.get("rating_deviation", 350.0)), float(p2.get("rating_deviation", 350.0))) if not is_singles else float(p1.get("rating_deviation", 350.0))
+        # Opponent RDs reflect effective rusted uncertainty
+        opp_rd_b = max(float(p3["effective_pre_rd"]), float(p4["effective_pre_rd"])) if not is_singles else float(p3["effective_pre_rd"])
+        opp_rd_a = max(float(p1["effective_pre_rd"]), float(p2["effective_pre_rd"])) if not is_singles else float(p1["effective_pre_rd"])
 
         participants = [(p1, True, p2, opp_rd_b), (p3, False, p4, opp_rd_a)]
         if not is_singles: participants.extend([(p2, True, p1, opp_rd_b), (p4, False, p3, opp_rd_a)])
@@ -374,27 +429,16 @@ class RyftV16:
         o_map = [cfg.get("COHORT_FACTOR_0_PROV", 1.0), cfg.get("COHORT_FACTOR_1_PROV", 0.75), cfg.get("COHORT_FACTOR_2_PROV", 0.50), cfg.get("COHORT_FACTOR_3_PROV", 0.25)]
         omega = o_map[min(3, max(0, prov_count - 1))]
 
-        effective_match_ts = match_timestamp or datetime.now(timezone.utc).isoformat()
-
         for p, is_a, partner, opp_rd in participants:
-            flags = []
-            r, rd, prov = float(p.get("latent_mmr", 3.0)), float(p.get("rating_deviation", 350.0)), bool(p.get("is_provisional", 1))
+            flags = list(p.get("inactivity_flags", []))
+            r = float(p.get("latent_mmr", 3.0))
+            rd = float(p.get("effective_pre_rd", p.get("rating_deviation", 350.0)))
+            prov = bool(p.get("is_provisional", 1))
             is_manual_override = bool(p.get("is_manually_verified", 0))
             is_quar = bool(p.get("is_quarantined", 0))
             won = (is_a and s_a > s_b) or (not is_a and s_b > s_a)
             
             q, sig = 0.0057565, cfg.get("RD_INFO_VARIANCE", 65.0)
-            
-            lmt = p.get("last_match_time")
-            if lmt:
-                try:
-                    lmt_dt = datetime.fromisoformat(lmt.replace("Z", "+00:00"))
-                    delta_t_days = max(0.0, (datetime.now(timezone.utc) - lmt_dt).total_seconds() / 86400.0)
-                    rust_c = cfg.get("INACTIVITY_CONSTANT", 12.0) / 30.0
-                    rd = min(350.0, math.sqrt(rd**2 + (rust_c**2 * delta_t_days)))
-                    if rd > 100.0 and p.get("calibration_tier") == "VERIFIED": flags.append("[ALERT_INACTIVITY_REPROVISION_FLAG]")
-                except Exception: pass
-            
             g_opp = 1.0 / math.sqrt(1.0 + (3.0 * (q**2) * (opp_rd**2)) / (math.pi**2))
 
             # Continuous Individual Volatility (Bit 7) & Scale Compression / Elite Drag (Bit 8)
@@ -419,12 +463,10 @@ class RyftV16:
                 raw_d = 0.000; flags.append("[ALERT_QUARANTINE_ISOLATION_ACTIVE]")
             elif is_draw:
                 # Dead-heat draw: deltas are governed purely by outcome residual (0.5000 - E)
-                # Underdogs receive earned positive deltas; favorites absorb penalty.
-                # Neither is clamped by win/loss monotonicity.
                 raw_d = standard_einstein_delta
                 flags.append("DRAW_PARITY_EXCHANGE")
             elif won:
-                # Win evaluation logic (Strict non-negative floor for verified players)
+                # Win evaluation logic
                 if prov and s_a != s_b:
                     actual_game_ratio = (g_w_raw + 0.5) / (g_l_raw + 0.5)
                     r_perf_team = opp_team_r + cfg.get("LOGISTIC_BETA", 2.0) * math.log10(actual_game_ratio)
@@ -475,7 +517,7 @@ class RyftV16:
             if not is_singles and partner and not is_quar and not is_draw:
                 gap = abs(r - float(partner.get("latent_mmr", 3.0)))
                 part_prov = bool(partner.get("is_provisional", 1))
-                part_rd = float(partner.get("rating_deviation", 350.0))
+                part_rd = float(partner.get("effective_pre_rd", partner.get("rating_deviation", 350.0)))
                 
                 if prov and part_prov and rd > 200.0 and part_rd > 200.0:
                     flags.append("MUTUAL_PROV_EXEMPTION")
@@ -631,7 +673,8 @@ class RyftV16:
 
             res.append({
                 "pid": p["player_id"], "name": format_pr_name(p.get("display_name", "Unknown"), prov), "raw_name": p.get("display_name", "Unknown"),
-                "pre_r": r, "post_r": new_r, "pre_disp": pre_disp, "post_disp": new_disp, "delta": final_d, "pre_rd": rd, "post_rd": new_rd,
+                "pre_r": r, "post_r": new_r, "pre_disp": pre_disp, "post_disp": new_disp, "delta": final_d, 
+                "stored_pre_rd": float(p.get("rating_deviation", 350.0)), "pre_rd": rd, "post_rd": new_rd,
                 "pre_acc": float(p.get("rating_accuracy_pct", 0.0)), "acc": acc_comp, "pre_tier": p.get("calibration_tier", "PROVISIONAL"), "tier": tier, 
                 "a_rd": a_rd, "a_m": a_m, "a_d": a_d, "prov": new_prov, "c_loss": new_c_loss, "flags": flags
             })
@@ -743,6 +786,7 @@ def build_pdf_document():
         ("Bit 12: Three-Way Rightsizing Routing", "Win vs. Draw (Parity) vs. Loss", "Ensures draws award underdogs positive deltas while blocking loss promotion."),
         ("Bit 13/14: Dual-Cap Casual Headroom & Session Caps", "Rolling Pairwise Cap: 0.150 | Global Casual Governor: 0.250 | Session: 0.300", "Stateful dual-cap structure preventing farm loops while permitting multi-court activity."),
         ("Bit 15: Point-In-Time Tournament Desktop", "Delta_additive = (R_past_perf - R_past) * 1.15", "Asynchronous ingestion calculating deltas via historical timestamps."),
+        ("Bit 15/16: On-Read Inactivity Rust Engine", "RD_eff = min(350.0, sqrt(RD^2 + c^2 * delta_days))", "Expands uncertainty dynamically after 7+ days of inactivity."),
         ("Bit 22: Tikhonov Damping & Affine Diffusion", "W_conf = K / (K + 3.0)", "Scales Hawking macro offsets by bridge traveler count (K)."),
         ("Bit 23: Hysteresis Soft Floor", "Buffer = 0.050 | display_rating remains pinned if losses < 3", "Decouples public ratings from minor daily variance drops.")
     ]
@@ -946,6 +990,9 @@ elif nav == "🎾 Log Matches":
             res_cols = st.columns(2 if is_singles else 4)
             for idx, pr in enumerate(sim_out["res"]):
                 with res_cols[idx]:
+                    is_eff_rusted = (pr["pre_rd"] > pr["stored_pre_rd"] + 0.05)
+                    rd_display = f"{pr['pre_rd']:.1f} (eff) ➔ {pr['post_rd']:.1f}" if is_eff_rusted else f"{pr['pre_rd']:.1f} ➔ {pr['post_rd']:.1f}"
+                    
                     st.markdown(f"""
                     <div style="background-color: #1e293b; border: 2px solid #0284c7; border-radius: 8px; padding: 12px; margin-bottom: 8px; color: #f8fafc;">
                         <h4 style="margin:0 0 8px 0; color:#38bdf8;">{pr['name']}</h4>
@@ -953,7 +1000,7 @@ elif nav == "🎾 Log Matches":
                             Pre MMR: <code style="color: #38bdf8; background: #0f172a;">{pr['pre_r']:.3f}</code><br/>
                             Post MMR: <code style="color: #38bdf8; background: #0f172a;">{pr['post_r']:.3f}</code><br/>
                             Delta: <span style="font-size:1.1em; font-weight:bold; color:{'#4ade80' if pr['delta']>=0 else '#f87171'}">{pr['delta']:+.4f}</span><br/>
-                            RD: <code style="color: #e2e8f0; background: #0f172a;">{pr['pre_rd']:.1f} ➔ {pr['post_rd']:.1f}</code><br/>
+                            RD: <code style="color: #e2e8f0; background: #0f172a;">{rd_display}</code><br/>
                             Acc: <code style="color: #e2e8f0; background: #0f172a;">{pr['pre_acc']:.1f}% ➔ {pr['acc']:.1f}%</code><br/>
                             Tier: <span style="background: #0f172a; padding: 2px 6px; border-radius: 4px; font-weight: bold; color: #38bdf8;">{pr['pre_tier']} ➔ {pr['tier']}</span>
                         </div>
@@ -1255,13 +1302,16 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
                                     cum_deltas[pid] += pr["delta"]
 
                                     with res_cols[idx]:
+                                        is_eff_rusted = (pr["pre_rd"] > pr["stored_pre_rd"] + 0.05)
+                                        rd_display = f"{pr['pre_rd']:.1f} (eff) ➔ {pr['post_rd']:.1f}" if is_eff_rusted else f"{pr['pre_rd']:.1f} ➔ {pr['post_rd']:.1f}"
+
                                         st.markdown(f"""
                                         <div style="background-color: #1e293b; border: 1px solid #0284c7; border-radius: 6px; padding: 10px; margin-bottom: 8px; color: #f8fafc;">
                                             <div style="font-weight: bold; color:#38bdf8;">{pr['name']}</div>
                                             <div style="font-size: 0.85em; color: #cbd5e1;">
                                                 Pre: <code style="color:#38bdf8; background:#0f172a;">{pr['pre_r']:.3f}</code> ➔ Post: <code style="color:#38bdf8; background:#0f172a;">{pr['post_r']:.3f}</code><br/>
                                                 Delta: <strong style="color:{'#4ade80' if pr['delta']>=0 else '#f87171'}">{pr['delta']:+.4f}</strong><br/>
-                                                RD: <code style="color:#e2e8f0; background:#0f172a;">{pr['pre_rd']:.1f} ➔ {pr['post_rd']:.1f}</code><br/>
+                                                RD: <code style="color:#e2e8f0; background:#0f172a;">{rd_display}</code><br/>
                                                 Acc: {pr['pre_acc']:.1f}% ➔ {pr['acc']:.1f}%<br/>
                                                 <span style="color:#38bdf8;">{pr['pre_tier']} ➔ {pr['tier']}</span>
                                             </div>
@@ -1471,7 +1521,7 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
                                 sm["score_team_a"], sm["score_team_b"], sm["set_scores_json"], max(sm["games_winner"], sm["score_team_a"]), min(sm["games_loser"], sm["score_team_b"]),
                                 out["ta_r"], out["tb_r"], out["ea"], out["applied_m_c"], out["mov"],
                                 out["res"][0]["delta"], out["res"][2]["delta"] if not is_sing else 0.0,
-                                out["res"][1]["delta"], out["res"][3]["delta"] if not is_sing else 0.0, json.dumps(all_guardrails), ts))
+                                out["res"][1]["delta"], out["res"][3]["delta"] if not is_singles else 0.0, json.dumps(all_guardrails), ts))
 
                             for pr in out["res"]:
                                 conn.execute("""UPDATE players SET latent_mmr=?, display_rating=?, rating_deviation=?, rating_accuracy_pct=?, calibration_tier=?, is_provisional=?, consecutive_losses=?, rolling_90d_peak=max(rolling_90d_peak, ?), rolling_180d_peak=max(rolling_180d_peak, ?), rolling_365d_peak=max(rolling_365d_peak, ?), last_match_time=? WHERE player_id=?""",
@@ -1653,7 +1703,7 @@ elif nav == "🏆 Tournament Desk (Delayed)":
                         ''', (m_id, t_data["venue_id"], tm["format_id"], tm["is_singles"], 1,
                               tm["team_a_p1_id"], tm["team_a_p2_id"], tm["team_b_p1_id"], tm["team_b_p2_id"],
                               tm["score_team_a"], tm["score_team_b"], tm["games_winner"], tm["games_loser"],
-                              out["ta_r"], out["tb_r"], out["ea"], out["applied_m_c"], out["mov"],
+                              out["ta_r"], out["tb_r"], out["ea"], mc, out["mov"],
                               out["res"][0]["delta"], out["res"][2]["delta"] if not tm["is_singles"] else 0.0,
                               out["res"][1]["delta"], out["res"][3]["delta"] if not tm["is_singles"] else 0.0, json.dumps(all_guardrails), ts_proc, ts))
 
@@ -2004,7 +2054,7 @@ elif nav == "⚙️ Global Config":
                     fc1, fc2, fc3 = st.columns([3, 2, 2])
                     fc1.write(f"**{fmt['format_name']}** (`{fmt['format_id']}`)")
                     fc2.caption(f"Category: {fmt['category']}")
-                    updated_mc[fmt["format_id"]] = fc3.number_input("Weight", 0.10, 1.50, float(fmt["mc_weight"]), 0.05, key=f"mc_{fmt['format_id']}")
+                    updated_mc[fmt["format_id"]] = new_mc = fc3.number_input("Weight", 0.10, 1.50, float(fmt["mc_weight"]), 0.05, key=f"mc_{fmt['format_id']}")
                 if st.form_submit_button("Save Format Confidence Weights ($M_C$)"):
                     for fid, weight in updated_mc.items():
                         conn.execute("UPDATE match_formats SET mc_weight = ? WHERE format_id = ?", (weight, fid))

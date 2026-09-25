@@ -288,8 +288,6 @@ class RyftV16:
 
     @staticmethod
     def get_rolling_24h_pairwise_delta(player_id, opponent_ids, current_ts_str, conn):
-        """Calculates net rating points exchanged strictly against this specific opponent cluster in casual play (24h).
-           Safeguarded against partner inversion: only evaluates matches where the opponent was on the opposing team."""
         if not current_ts_str or not conn or not opponent_ids:
             return 0.0
         try:
@@ -326,7 +324,6 @@ class RyftV16:
 
     @staticmethod
     def get_rolling_24h_global_delta(player_id, current_ts_str, conn):
-        """Calculates total net casual rating gained/lost across all opponents in the trailing 24 hours."""
         if not current_ts_str or not conn:
             return 0.0
         try:
@@ -366,7 +363,6 @@ class RyftV16:
         is_draw = (s_a == s_b)
         g_w, g_l = max(g_w_raw, g_l_raw + (0 if is_draw else 1)), g_l_raw
         
-        # Parse match timestamp
         effective_match_ts = match_timestamp or datetime.now(timezone.utc).isoformat()
         try:
             match_dt = datetime.fromisoformat(effective_match_ts.replace("Z", "+00:00"))
@@ -453,7 +449,6 @@ class RyftV16:
         db_mc = float(fmt_row["mc_weight"]) if fmt_row else 1.00
         mc = float(cfg.get(f"MC_{fmt_id}", db_mc))
 
-        # Opponent RDs reflect effective rusted uncertainty
         opp_rd_b = max(float(p3["effective_pre_rd"]), float(p4["effective_pre_rd"])) if not is_singles else float(p3["effective_pre_rd"])
         opp_rd_a = max(float(p1["effective_pre_rd"]), float(p2["effective_pre_rd"])) if not is_singles else float(p1["effective_pre_rd"])
 
@@ -468,7 +463,6 @@ class RyftV16:
         for p, is_a, partner, opp_rd in participants:
             flags = list(p.get("inactivity_flags", []))
 
-            # Geographic Bridge Alerts Visible on Simulation Cards
             if is_country_bridge:
                 flags.append(f"[ALERT_CROSS_COUNTRY_BRIDGE] ({', '.join(country_travelers)})")
             elif is_city_bridge:
@@ -486,7 +480,6 @@ class RyftV16:
             q, sig = 0.0057565, cfg.get("RD_INFO_VARIANCE", 65.0)
             g_opp = 1.0 / math.sqrt(1.0 + (3.0 * (q**2) * (opp_rd**2)) / (math.pi**2))
 
-            # Continuous Individual Volatility (Bit 7) & Scale Compression / Elite Drag (Bit 8)
             k_ind = cfg.get("K_MAX", 0.400) - (r / cfg.get("R_MAX", 7.000)) * (cfg.get("K_MAX", 0.400) - cfg.get("K_MIN", 0.080))
             _, _, _, cat_speed = cls.get_cat_for_rating(r, conn=conn)
             if cat_speed != 1.00:
@@ -503,25 +496,20 @@ class RyftV16:
             opp_team_r = tb_r if is_a else ta_r
             partner_gap = abs(r - float(partner.get("latent_mmr", 3.0))) if (not is_singles and partner) else 0.0
 
-            # --- EVALUATION ROUTING: QUARANTINE vs. DRAW vs. WIN vs. LOSS ---
             if is_quar:
                 raw_d = 0.000; flags.append("[ALERT_QUARANTINE_ISOLATION_ACTIVE]")
             elif is_draw:
-                # Dead-heat draw: deltas are governed purely by outcome residual (0.5000 - E)
                 raw_d = standard_einstein_delta
                 flags.append("DRAW_PARITY_EXCHANGE")
             elif won:
-                # Win evaluation logic
                 if prov and s_a != s_b:
                     actual_game_ratio = (g_w_raw + 0.5) / (g_l_raw + 0.5)
                     r_perf_team = opp_team_r + cfg.get("LOGISTIC_BETA", 2.0) * math.log10(actual_game_ratio)
                     
                     if not is_singles and partner and partner_gap >= 1.500 and r > float(partner.get("latent_mmr", 3.0)):
-                        # Anchor carrying a novice: Shield from negative delta on win!
                         raw_d = max(0.0050, standard_einstein_delta)
                         flags.append("[ALERT_ANCHOR_CARRY_WIN_SHIELD]")
                     else:
-                        # Balanced PR pairs or solo PR: If they severely underperformed expected spread, allow downward pull
                         raw_pr_delta = (r_perf_team - r) * cfg.get("PROVISIONAL_ABSORPTION_ALPHA", 0.45) * mc * g_opp
                         max_d = cfg.get("MAX_PROVISIONAL_DELTA", 0.750)
                         raw_d = max(-max_d, min(max_d, raw_pr_delta))
@@ -529,10 +517,8 @@ class RyftV16:
                         if raw_d < 0:
                             flags.append("[ALERT_OVERRATED_PR_WIN_DOWNWARD_PULL]")
                 else:
-                    # Verified players strictly non-negative on wins
                     raw_d = max(0.0010, standard_einstein_delta)
             else:
-                # Balanced PR Defeat Evaluation
                 if prov and s_a != s_b:
                     actual_game_ratio = (g_l_raw + 0.5) / (g_w_raw + 0.5)
                     r_perf_team = opp_team_r + cfg.get("LOGISTIC_BETA", 2.0) * math.log10(actual_game_ratio)
@@ -540,25 +526,21 @@ class RyftV16:
                     if r_perf_team > r:
                         tot_games = g_w_raw + g_l_raw
                         game_win_share = (g_l_raw / tot_games) if tot_games > 0 else 0.0
-                        if game_win_share < 0.30:  # e.g., 2 games out of 14 is 14.3% (< 30%)
+                        if game_win_share < 0.30:
                             raw_d = 0.0000
                             flags.append("[ALERT_LOSS_NON_POSITIVITY_CLAMP]")
                         else:
-                            # Genuine close fight by an underdog (e.g. 5-7, 6-7 -> >35% game share)
                             raw_discovery_delta = (r_perf_team - r) * 0.10 * mc * g_opp
                             raw_d = min(0.0250, raw_discovery_delta)
                             flags.append("[ALERT_UNDERDOG_DEFEAT_MICRO_DISCOVERY]")
                     else:
-                        # Over-rated player lost as expected or underperformed: pull downward normally
                         raw_pr_delta = (r_perf_team - r) * cfg.get("PROVISIONAL_ABSORPTION_ALPHA", 0.45) * mc * g_opp
                         max_d = cfg.get("MAX_PROVISIONAL_DELTA", 0.750)
                         raw_d = max(-max_d, min(0.0, raw_pr_delta))
                         flags.append("RIGHTSIZING_INTERPOLATION")
                 else:
-                    # Verified phase: Guaranteed non-positive on defeat
                     raw_d = min(0.0000, standard_einstein_delta)
 
-            # Partner Disparity Dampening (Bits 9 & 10)
             if not is_singles and partner and not is_quar and not is_draw:
                 gap = abs(r - float(partner.get("latent_mmr", 3.0)))
                 part_prov = bool(partner.get("is_provisional", 1))
@@ -580,7 +562,6 @@ class RyftV16:
                         if not prov:
                             raw_d = max(0.0010, raw_d)
 
-            # Bit 16 Sybil Trust Bypass (<5 matches)
             m_played = int(p.get("verified_matches_count", 0))
             w_g = 1.0
             if m_played >= 5:
@@ -589,21 +570,17 @@ class RyftV16:
             if w_g < 1.0 and not is_quar:
                 raw_d *= w_g; flags.append(f"[ALERT_DISCONNECTED_GRAPH_DAMPENING] ({w_g:.2f}x)")
 
-            # Opponent IDs for targeted pairwise exchange tracking
             opp_ids = [p3["player_id"], p4["player_id"]] if is_a else [p1["player_id"], p2["player_id"]]
             opp_ids = [oid for oid in opp_ids if oid is not None]
 
-            # Scale caps if player is provisional
             mult = cfg.get("PROVISIONAL_CAP_MULTIPLIER", 2.5) if prov else 1.0
             pairwise_cap = cfg.get("MAX_24H_PAIRWISE_EXCHANGE_CAP", cfg.get("MAX_24H_EXCHANGE_CAP", 0.1500)) * mult
             global_cap = cfg.get("MAX_24H_GLOBAL_CASUAL_CAP", 0.2500) * mult
 
-            # Query historical 24h deltas
             prior_pairwise = cls.get_rolling_24h_pairwise_delta(p["player_id"], opp_ids, effective_match_ts, conn)
             prior_global = cls.get_rolling_24h_global_delta(p["player_id"], effective_match_ts, conn)
             cum_session_delta = cumulative_deltas.get(p["player_id"], 0.0) if cumulative_deltas is not None else 0.0
 
-            # Gated Elevator Blowout Trigger for Placement Cap Bypass
             is_elevator_active = (
                 prov and won and not is_draw and (raw_d > pairwise_cap) and
                 (s_margin >= 1.00 or (g_w_raw >= 2 * g_l_raw and g_w_raw >= 4)) and
@@ -620,7 +597,6 @@ class RyftV16:
                 t_mult = cfg.get("TOURNAMENT_STAKES_MULTIPLIER", 1.15)
                 final_d = raw_d * t_mult; flags.append(f"TOURNAMENT ({t_mult}x, Uncapped)")
             elif session_id and session_checked_in >= cfg.get("MIN_SESSION_PLAYERS", 6):
-                # Managed Session Cap
                 sess_cap = cfg.get("SESSION_EXCHANGE_CAP", 0.300) * mult
                 target_cum = cum_session_delta + raw_d
                 capped_target = max(-sess_cap, min(sess_cap, target_cum))
@@ -628,7 +604,6 @@ class RyftV16:
                 if abs(target_cum) > sess_cap:
                     flags.append("SESSION_CUMULATIVE_CAP_ENFORCED")
             else:
-                # Standalone Casual Dual-Cap Clamping (Pairwise vs. Global Governor)
                 if raw_d >= 0.0:
                     headroom_pairwise = max(0.0, pairwise_cap - max(0.0, prior_pairwise + cum_session_delta))
                     headroom_global = max(0.0, global_cap - max(0.0, prior_global + cum_session_delta))
@@ -678,7 +653,6 @@ class RyftV16:
                 raw_new_rd = max(30.0, math.sqrt(1.0 / (1.0 / (rd**2) + (mc * s_margin * (g_opp**2) * omega) / (sig**2))))
                 new_rd = rd - ((rd - raw_new_rd) * (cfg.get("PROVISIONAL_RD_CONTRACTION_RATIO", 0.35) if prov else 1.0))
             
-            # Opponent and Match Projection for Simulation Preview
             past_opps = conn.execute("""
                 SELECT DISTINCT opp_id FROM (
                     SELECT team_b_p1_id as opp_id FROM matches WHERE team_a_p1_id = ? OR team_a_p2_id = ? UNION
@@ -696,7 +670,6 @@ class RyftV16:
             loc = conn.execute("SELECT active_bridge_count FROM locations WHERE location_id = ?", (p.get("home_city_id", ""),)).fetchone()
             bridge_k = loc["active_bridge_count"] if loc else 0
 
-            # Tri-Gate Evaluation
             min_m = int(cfg.get("PROVISIONAL_MIN_MATCHES", 5))
             min_o = int(cfg.get("PROVISIONAL_MIN_OPPONENTS", 3))
             rd_gate = float(cfg.get("PROVISIONAL_RD_GATE", 100.0))
@@ -704,10 +677,8 @@ class RyftV16:
             tri_gate_passed = (new_rd <= rd_gate and projected_m >= min_m and projected_opps >= min_o)
             new_prov = 0 if (tri_gate_passed or is_manual_override) else 1
 
-            # Recalculate Accuracy Using New Provisional State
             acc_comp, a_rd, a_m, a_d = cls.calc_accuracy(new_rd, projected_m, projected_opps, new_prov, bridge_k, cfg)
 
-            # Public Calibration Tier Decoupled from Provisional Accuracy Trap
             if new_prov == 1:
                 tier = "PROVISIONAL"
             else:
@@ -922,7 +893,6 @@ elif nav == "🎾 Log Matches":
     conn = get_db_connection()
     venues = conn.execute("SELECT * FROM venues WHERE is_active = 1").fetchall()
     players = conn.execute("SELECT * FROM players WHERE calibration_tier != 'INACTIVE' ORDER BY display_name").fetchall()
-    # Query all active match formats across all categories
     formats = conn.execute("SELECT * FROM match_formats WHERE is_active = 1 ORDER BY category, mc_weight DESC, target_games, total_points").fetchall()
     conn.close()
 
@@ -1064,12 +1034,10 @@ elif nav == "🎾 Log Matches":
             if do_save:
                 conn = get_db_connection()
                 try:
-                    # 1. Collision-proof match ID (avoids UNIQUE constraint collisions on rapid submits)
                     m_id = f"M_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
                     match_dt = datetime.combine(match_date, match_time)
                     ts = match_dt.isoformat()
 
-                    # 2. Universal Bridge Resolution Across All 4 Players
                     ven_city = ven_obj.get("city_id")
                     ven_country = ven_obj.get("country_code")
 
@@ -1091,12 +1059,10 @@ elif nav == "🎾 Log Matches":
                             if p_v and p_v != ven_obj["venue_id"] and p_c == ven_city:
                                 is_venue_bridge = 1
 
-                    # 3. Flatten Guardrails & Sets
                     all_guardrails = []
                     for pr in sim_out["res"]:
                         all_guardrails.extend(pr.get("flags", []))
 
-                    # 4. Atomic INSERT into Matches
                     conn.execute("""
                         INSERT INTO matches (
                             match_id, venue_id, format_id, is_singles, is_tournament,
@@ -1121,7 +1087,6 @@ elif nav == "🎾 Log Matches":
                         json.dumps(all_guardrails), ts
                     ))
 
-                    # 5. Update Player Profiles & Match Logs
                     for pr in sim_out["res"]:
                         conn.execute("""
                             UPDATE players SET 
@@ -1155,7 +1120,6 @@ elif nav == "🎾 Log Matches":
                             pr["delta"], json.dumps(pr.get("flags", [])), ts
                         ))
 
-                    # 6. Increment Venue and Regional Counters
                     conn.execute("UPDATE venues SET total_matches_played = total_matches_played + 1 WHERE venue_id = ?", (ven_obj["venue_id"],))
                     if is_city_bridge:
                         conn.execute("UPDATE venues SET city_bridge_matches_count = city_bridge_matches_count + 1 WHERE venue_id = ?", (ven_obj["venue_id"],))
@@ -1163,12 +1127,10 @@ elif nav == "🎾 Log Matches":
                         conn.execute("UPDATE venues SET country_bridge_matches_count = country_bridge_matches_count + 1 WHERE venue_id = ?", (ven_obj["venue_id"],))
                     conn.execute("UPDATE locations SET total_matches_played = total_matches_played + 1 WHERE location_id = ?", (ven_obj["city_id"],))
 
-                    # 7. Sync Player Aggregates Using the Same Active Connection
                     for p in all_players:
                         if p and p.get("player_id"):
                             RyftV16.sync_player_aggregates(p["player_id"], conn=conn)
 
-                    # Commit all writes together atomically
                     conn.commit()
                     st.balloons()
                     st.success("✅ Match successfully committed to database ledger!")
@@ -1389,8 +1351,7 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
                                     sets_recorded.append((s2a, s2b))
                                     if st.checkbox("Deciding Set 3", key=f"s3_chk_{m['session_match_id']}"):
                                         s3c1, s3c2 = st.columns(2)
-                                        s3a = s3c1.number_input(f"Set 3: {ta_players}", 0, 7, 6, key=f"s3a_{m['session_match_id']}")
-                                        s3b = s3c2.number_input(f"Set 3: {tb_players}", 0, 7, 4, key=f"s3b_{m['session_match_id']}")
+                                        s3a = s3c1.number_input(f"Set 3: {ta_players}", 0, 7, 6, key=f"s3a_{m['session_match_id']}"); s3b = s3c2.number_input(f"Set 3: {tb_players}", 0, 7, 4, key=f"s3b_{m['session_match_id']}")
                                         sets_recorded.append((s3a, s3b))
                                     sa, sb = sum(1 for s in sets_recorded if s[0]>s[1]), sum(1 for s in sets_recorded if s[1]>s[0])
                                     gw, gl = sum(x[0] for x in sets_recorded), sum(x[1] for x in sets_recorded)
@@ -2028,15 +1989,21 @@ elif nav == "👥 Player Roster & Calibration":
                     conn.commit(); st.warning("Player hard deleted."); st.rerun()
     conn.close()
 
+# ==============================================================================
+# 🏢 TAB: VENUES & REGIONS (DEEP REGIONAL INSPECTION & CRUD)
+# ==============================================================================
 elif nav == "🏢 Venues & Regions":
     st.title("Geographical Ecosystem & Regional Drill-Downs")
     conn = get_db_connection()
+
+    # Master Platform Overview Row
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Venues", conn.execute("SELECT COUNT(*) FROM venues WHERE is_active = 1").fetchone()[0])
-    c2.metric("Cities", conn.execute("SELECT COUNT(*) FROM locations WHERE location_type = 'CITY' AND is_active = 1").fetchone()[0])
-    c3.metric("Countries", conn.execute("SELECT COUNT(*) FROM locations WHERE location_type = 'COUNTRY' AND is_active = 1").fetchone()[0])
+    c1.metric("Total Venues", conn.execute("SELECT COUNT(*) FROM venues WHERE is_active = 1").fetchone()[0])
+    c2.metric("Total Cities", conn.execute("SELECT COUNT(*) FROM locations WHERE location_type = 'CITY' AND is_active = 1").fetchone()[0])
+    c3.metric("Total Countries", conn.execute("SELECT COUNT(*) FROM locations WHERE location_type = 'COUNTRY' AND is_active = 1").fetchone()[0])
     c4.metric("Total Physical Courts", conn.execute("SELECT SUM(court_count) FROM venues WHERE is_active = 1").fetchone()[0] or 0)
 
+    # Creation Modals / Expanders
     ba1, ba2, ba3 = st.columns(3)
     with ba1.expander("➕ Add Venue", expanded=False):
         v_name = st.text_input("Venue Name", key="av_name")
@@ -2067,55 +2034,159 @@ elif nav == "🏢 Venues & Regions":
         co_code = st.text_input("ISO 3-Letter Code", key="aco_code").upper()
         if st.button("Register Country", type="primary"):
             if co_name and co_code:
-                conn.execute("INSERT INTO locations (location_id, location_type, location_name, country_code, updated_at) VALUES (?, 'COUNTRY', ?, ?, ?)""", (f"LOC_{co_code}", co_name, co_code, datetime.now(timezone.utc).isoformat()))
+                conn.execute("INSERT INTO locations (location_id, location_type, location_name, country_code, updated_at) VALUES (?, 'COUNTRY', ?, ?, ?)", (f"LOC_{co_code}", co_name, co_code, datetime.now(timezone.utc).isoformat()))
                 conn.commit(); st.success(f"Added {co_name}!"); st.rerun()
 
     st.markdown("---")
-    st.markdown("### ✏️ Edit & Inspect Venues")
-    v_list = conn.execute("SELECT v.*, l.location_name as city FROM venues v JOIN locations l ON v.city_id = l.location_id WHERE v.is_active = 1").fetchall()
+    st.markdown("### ✏️ Edit & Inspect Facility Details")
+
+    v_list = conn.execute("""
+        SELECT v.*, l.location_name as city, co.location_name as country 
+        FROM venues v 
+        JOIN locations l ON v.city_id = l.location_id 
+        LEFT JOIN locations co ON l.parent_id = co.location_id
+        WHERE v.is_active = 1
+    """).fetchall()
+
     if v_list:
-        v_pick_id = st.selectbox("Select Venue to Edit", [v["venue_id"] for v in v_list], format_func=lambda x: [v["venue_name"] for v in v_list if v["venue_id"] == x][0])
+        v_pick_id = st.selectbox("Select Venue to Edit", [v["venue_id"] for v in v_list], format_func=lambda x: [f"{v['venue_name']} ({v['city']})" for v in v_list if v["venue_id"] == x][0])
         v_data = dict(conn.execute("SELECT * FROM venues WHERE venue_id = ?", (v_pick_id,)).fetchone())
-        
-        c_v1, c_v2, c_v3, c_v4 = st.columns(4)
-        c_v1.metric("Matches Hosted", v_data["total_matches_played"])
-        c_v2.metric("Unique Players", conn.execute("SELECT COUNT(DISTINCT player_id) FROM match_logs ml JOIN matches m ON ml.match_id = m.match_id WHERE m.venue_id = ?", (v_pick_id,)).fetchone()[0])
-        c_v3.metric("Sessions Hosted", conn.execute("SELECT COUNT(*) FROM sessions WHERE venue_id = ?", (v_pick_id,)).fetchone()[0])
-        c_v4.metric("City Bridges", v_data["city_bridge_matches_count"])
+
+        u_players = conn.execute("""
+            SELECT COUNT(DISTINCT player_id) FROM match_logs ml 
+            JOIN matches m ON ml.match_id = m.match_id WHERE m.venue_id = ?
+        """, (v_pick_id,)).fetchone()[0]
+
+        v_bridges = conn.execute("""
+            SELECT COUNT(*) FROM matches WHERE venue_id = ? AND is_venue_bridge = 1
+        """, (v_pick_id,)).fetchone()[0]
+
+        s_hosted = conn.execute("""
+            SELECT COUNT(*) FROM sessions WHERE venue_id = ?
+        """, (v_pick_id,)).fetchone()[0]
+
+        # Full 6-Metric Display Bar Across Two Rows
+        m_r1, m_r2, m_r3 = st.columns(3)
+        m_r1.metric("Matches Hosted", v_data["total_matches_played"])
+        m_r2.metric("Unique Players", u_players)
+        m_r3.metric("Sessions Hosted", s_hosted)
+
+        b_r1, b_r2, b_r3 = st.columns(3)
+        b_r1.metric("Venue Bridges (L1)", v_bridges)
+        b_r2.metric("City Bridges (L2)", v_data.get("city_bridge_matches_count", 0))
+        b_r3.metric("Country Bridges (L3)", v_data.get("country_bridge_matches_count", 0))
 
         with st.form("edit_venue_form"):
             ev_name = st.text_input("Venue Name", value=v_data["venue_name"])
             ev_courts = st.number_input("Court Count", min_value=1, value=v_data["court_count"])
-            ev_ver = st.checkbox("Verified Desk Authority", value=bool(v_data["is_verified"]))
+            ev_ver = st.checkbox("Verified Desk Authority (Sanctioned Overrides)", value=bool(v_data["is_verified"]))
             if st.form_submit_button("Save Venue Overrides"):
                 conn.execute("UPDATE venues SET venue_name=?, court_count=?, is_verified=? WHERE venue_id=?", (ev_name, ev_courts, 1 if ev_ver else 0, v_pick_id))
-                conn.commit(); st.success("Venue Updated!"); st.rerun()
+                conn.commit()
+                st.success("Venue settings saved!")
+                st.rerun()
 
     st.markdown("---")
     view_mode = st.radio("Inspect Hierarchy By:", ["Countries", "Cities", "Venues"], horizontal=True)
 
+    # 1. COUNTRIES HIERARCHY DRILL-DOWN
     if view_mode == "Countries":
-        co_list = conn.execute("SELECT * FROM locations WHERE location_type = 'COUNTRY' AND is_active = 1").fetchall()
+        co_list = conn.execute("""
+            SELECT * FROM locations WHERE location_type = 'COUNTRY' AND is_active = 1 ORDER BY location_name ASC
+        """).fetchall()
+
         for co in co_list:
-            p_in_co = conn.execute("SELECT p.latent_mmr, p.all_time_badge FROM players p JOIN locations l ON p.home_city_id = l.location_id WHERE l.parent_id = ? AND p.calibration_tier != 'INACTIVE'", (co["location_id"],)).fetchall()
-            with st.expander(f"🌍 {co['location_name']} ({co['country_code']}) • Total Players: {len(p_in_co)}"):
-                st.write(f"Country Code: `{co['country_code']}`")
+            co_id = co["location_id"]
+            c_cities = conn.execute("SELECT COUNT(*) FROM locations WHERE parent_id = ? AND location_type = 'CITY'", (co_id,)).fetchone()[0]
+            c_venues = conn.execute("SELECT COUNT(*) FROM venues WHERE country_code = ? AND is_active = 1", (co["country_code"],)).fetchone()[0]
+            c_courts = conn.execute("SELECT SUM(court_count) FROM venues WHERE country_code = ? AND is_active = 1", (co["country_code"],)).fetchone()[0] or 0
+            c_players = conn.execute("SELECT COUNT(*) FROM players WHERE home_country_code = ? AND calibration_tier != 'INACTIVE'", (co["country_code"],)).fetchone()[0]
+            c_matches = conn.execute("""
+                SELECT COUNT(*) FROM matches m 
+                JOIN venues v ON m.venue_id = v.venue_id 
+                WHERE v.country_code = ?
+            """, (co["country_code"],)).fetchone()[0]
+            c_bridges = conn.execute("""
+                SELECT COUNT(*) FROM matches m 
+                JOIN venues v ON m.venue_id = v.venue_id 
+                WHERE v.country_code = ? AND m.is_country_bridge = 1
+            """, (co["country_code"],)).fetchone()[0]
+
+            with st.expander(f"🌍 {co['location_name']} ({co['country_code']}) • Registered Players: {c_players} | Matches: {c_matches}"):
+                k1, k2, k3, k4, k5 = st.columns(5)
+                k1.metric("Cities", c_cities)
+                k2.metric("Venues", c_venues)
+                k3.metric("Courts", c_courts)
+                k4.metric("Matches Played", c_matches)
+                k5.metric("Country Bridges", c_bridges)
+
+    # 2. CITIES HIERARCHY DRILL-DOWN
     elif view_mode == "Cities":
         countries = conn.execute("SELECT location_id, location_name FROM locations WHERE location_type = 'COUNTRY' AND is_active = 1").fetchall()
         co_sel = st.selectbox("Filter by Country", ["-- All Countries --"] + [c["location_name"] for c in countries])
-        sql = "SELECT * FROM locations WHERE location_type = 'CITY' AND is_active = 1"
+
+        sql = """
+            SELECT c.*, p.location_name as parent_country 
+            FROM locations c 
+            JOIN locations p ON c.parent_id = p.location_id 
+            WHERE c.location_type = 'CITY' AND c.is_active = 1
+        """
         params = []
         if co_sel != "-- All Countries --":
-            co_id = [c["location_id"] for c in countries if c["location_name"] == co_sel][0]
-            sql += " AND parent_id = ?"; params.append(co_id)
+            sql += " AND p.location_name = ?"
+            params.append(co_sel)
+
         for ci in conn.execute(sql, params).fetchall():
-            p_in_ci = conn.execute("SELECT latent_mmr FROM players WHERE home_city_id = ?", (ci["location_id"],)).fetchall()
-            with st.expander(f"🏙️ {ci['location_name']} • Players: {len(p_in_ci)} | Bridges (K): {ci['active_bridge_count']}"):
-                st.write(f"Readiness Score: `{ci['readiness_score']:.1f}%` | Hawking Offset: `{ci['hawking_offset']:+.4f}`")
+            ci_id = ci["location_id"]
+            c_venues = conn.execute("SELECT COUNT(*) FROM venues WHERE city_id = ? AND is_active = 1", (ci_id,)).fetchone()[0]
+            c_courts = conn.execute("SELECT SUM(court_count) FROM venues WHERE city_id = ? AND is_active = 1", (ci_id,)).fetchone()[0] or 0
+            c_players = conn.execute("SELECT COUNT(*) FROM players WHERE home_city_id = ? AND calibration_tier != 'INACTIVE'", (ci_id,)).fetchone()[0]
+            c_matches = conn.execute("""
+                SELECT COUNT(*) FROM matches m 
+                JOIN venues v ON m.venue_id = v.venue_id 
+                WHERE v.city_id = ?
+            """, (ci_id,)).fetchone()[0]
+            c_city_bridges = conn.execute("""
+                SELECT COUNT(*) FROM matches m 
+                JOIN venues v ON m.venue_id = v.venue_id 
+                WHERE v.city_id = ? AND m.is_city_bridge = 1
+            """, (ci_id,)).fetchone()[0]
+
+            with st.expander(f"🏙️ {ci['location_name']}, {ci['parent_country']} • Players: {c_players} | Matches: {c_matches}"):
+                q1, q2, q3, q4 = st.columns(4)
+                q1.metric("Venues", c_venues)
+                q2.metric("Courts", c_courts)
+                q3.metric("City Bridges", c_city_bridges)
+                q4.metric("Hawking Offset", f"{ci['hawking_offset']:+.4f}")
+
+    # 3. VENUES HIERARCHY DRILL-DOWN
     elif view_mode == "Venues":
-        for v in conn.execute("SELECT v.*, l.location_name as city FROM venues v JOIN locations l ON v.city_id = l.location_id WHERE v.is_active = 1").fetchall():
-            with st.expander(f"🏟️ {v['venue_name']} ({v['city']}) • Courts: {v['court_count']} | Matches: {v['total_matches_played']}"):
-                st.write(f"Verified Desk Authority: `{'YES' if v['is_verified'] else 'NO'}`")
+        v_rows = conn.execute("""
+            SELECT v.*, l.location_name as city, co.location_name as country 
+            FROM venues v 
+            JOIN locations l ON v.city_id = l.location_id 
+            LEFT JOIN locations co ON l.parent_id = co.location_id
+            WHERE v.is_active = 1 ORDER BY v.total_matches_played DESC
+        """).fetchall()
+
+        for v in v_rows:
+            vid = v["venue_id"]
+            v_players = conn.execute("""
+                SELECT COUNT(DISTINCT player_id) FROM match_logs ml 
+                JOIN matches m ON ml.match_id = m.match_id WHERE m.venue_id = ?
+            """, (vid,)).fetchone()[0]
+            v_venue_bridges = conn.execute("""
+                SELECT COUNT(*) FROM matches WHERE venue_id = ? AND is_venue_bridge = 1
+            """, (vid,)).fetchone()[0]
+
+            with st.expander(f"🏟️ {v['venue_name']} ({v['city']}, {v['country']}) • Courts: {v['court_count']} | Matches: {v['total_matches_played']}"):
+                g1, g2, g3, g4, g5 = st.columns(5)
+                g1.metric("Unique Players", v_players)
+                g2.metric("Venue Bridges", v_venue_bridges)
+                g3.metric("City Bridges", v["city_bridge_matches_count"])
+                g4.metric("Country Bridges", v["country_bridge_matches_count"])
+                g5.metric("Verified Desk", "ACTIVE" if v["is_verified"] else "UNVERIFIED")
+
     conn.close()
 
 elif nav == "🌐 Hawking Engine":
@@ -2206,7 +2277,7 @@ elif nav == "⚙️ Global Config":
                     fc1, fc2, fc3 = st.columns([3, 2, 2])
                     fc1.write(f"**{fmt['format_name']}** (`{fmt['format_id']}`)")
                     fc2.caption(f"Category: {fmt['category']}")
-                    updated_mc[fmt["format_id"]] = new_mc = fc3.number_input("Weight", 0.10, 1.50, float(fmt["mc_weight"]), 0.05, key=f"mc_{fmt['format_id']}")
+                    updated_mc[fmt["format_id"]] = fc3.number_input("Weight", 0.10, 1.50, float(fmt["mc_weight"]), 0.05, key=f"mc_{fmt['format_id']}")
                 if st.form_submit_button("Save Format Confidence Weights ($M_C$)"):
                     for fid, weight in updated_mc.items():
                         conn.execute("UPDATE match_formats SET mc_weight = ? WHERE format_id = ?", (weight, fid))

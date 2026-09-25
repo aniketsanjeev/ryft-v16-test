@@ -373,9 +373,40 @@ class RyftV16:
             match_dt = datetime.now(timezone.utc)
 
         # ----------------------------------------------------------------------
+        # UNIVERSAL GEOGRAPHIC BRIDGE DETECTION ACROSS ALL 4 COURT POSITIONS
+        # ----------------------------------------------------------------------
+        ven_row = conn.execute("SELECT venue_id, city_id, country_code FROM venues WHERE venue_id = ?", (v_id,)).fetchone()
+        venue_city = ven_row["city_id"] if ven_row else None
+        venue_country = ven_row["country_code"] if ven_row else None
+
+        all_on_court = [p1, p3] + ([p2, p4] if not is_singles else [])
+
+        is_venue_bridge = False
+        is_city_bridge = False
+        is_country_bridge = False
+        city_travelers = []
+        country_travelers = []
+        venue_travelers = []
+
+        for px in all_on_court:
+            p_ven = px.get("home_venue_id")
+            p_cit = px.get("home_city_id")
+            p_cnt = px.get("home_country_code")
+            p_name = px.get("display_name", "Player")
+
+            if p_cnt and venue_country and p_cnt != venue_country:
+                is_country_bridge = True
+                country_travelers.append(f"{p_name} (Intl)")
+            elif p_cit and venue_city and p_cit != venue_city:
+                is_city_bridge = True
+                city_travelers.append(f"{p_name} (Cross-City)")
+            elif p_ven and v_id and p_ven != v_id and p_cit == venue_city:
+                is_venue_bridge = True
+                venue_travelers.append(f"{p_name} (Cross-Club)")
+
+        # ----------------------------------------------------------------------
         # INACTIVITY RUST EXPANSION (BITS 15 & 16) - PRE-EVALUATED FOR ALL PLAYERS
         # ----------------------------------------------------------------------
-        all_on_court = [p1, p3] + ([p2, p4] if not is_singles else [])
         for px in all_on_court:
             stored_rd = float(px.get("rating_deviation", 350.0))
             last_ts = cls.get_last_active_timestamp(
@@ -435,6 +466,15 @@ class RyftV16:
 
         for p, is_a, partner, opp_rd in participants:
             flags = list(p.get("inactivity_flags", []))
+
+            # Geographic Bridge Alerts Visible on Simulation Cards
+            if is_country_bridge:
+                flags.append(f"[ALERT_CROSS_COUNTRY_BRIDGE] ({', '.join(country_travelers)})")
+            elif is_city_bridge:
+                flags.append(f"[ALERT_CROSS_CITY_BRIDGE] ({', '.join(city_travelers)})")
+            elif is_venue_bridge:
+                flags.append(f"[ALERT_VENUE_BRIDGE] ({', '.join(venue_travelers)})")
+
             r = float(p.get("latent_mmr", 3.0))
             rd = float(p.get("effective_pre_rd", p.get("rating_deviation", 350.0)))
             prov = bool(p.get("is_provisional", 1))
@@ -684,7 +724,13 @@ class RyftV16:
             })
             
         if owns: conn.close()
-        return {"ta_r": ta_r, "tb_r": tb_r, "ea": ea, "mov": s_margin, "applied_m_c": mc, "res": res}
+        return {
+            "ta_r": ta_r, "tb_r": tb_r, "ea": ea, "mov": s_margin, "applied_m_c": mc,
+            "is_venue_bridge": is_venue_bridge,
+            "is_city_bridge": is_city_bridge,
+            "is_country_bridge": is_country_bridge,
+            "res": res
+        }
 
 class SessionLogicEngine:
     @staticmethod
@@ -1017,9 +1063,11 @@ elif nav == "🎾 Log Matches":
                 conn = get_db_connection()
                 m_id = f"M_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
                 ts = match_ts_val
-                is_v_b = 1 if (p1_obj.get("home_venue_id") != ven_obj["venue_id"] and p1_obj.get("home_city_id") == ven_obj["city_id"]) else 0
-                is_c_b = 1 if (p1_obj.get("home_city_id") != ven_obj["city_id"] and p1_obj.get("home_country_code") == ven_obj["country_code"]) else 0
-                is_co_b = 1 if (p1_obj.get("home_country_code") != ven_obj["country_code"]) else 0
+                
+                # Universal geographic bridge indicators evaluated across all 4 positions
+                is_v_b = 1 if sim_out.get("is_venue_bridge") else 0
+                is_c_b = 1 if sim_out.get("is_city_bridge") else 0
+                is_co_b = 1 if sim_out.get("is_country_bridge") else 0
 
                 all_guardrails = []
                 for pr in sim_out["res"]: all_guardrails.extend(pr["flags"])
@@ -1504,9 +1552,10 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
                             )
 
                             m_id = f"M_SESS_{sm['session_match_id']}"
-                            is_v_b = 1 if (p1_d.get("home_venue_id") != s_data["venue_id"] and p1_d.get("home_city_id") == ven_row["city_id"]) else 0
-                            is_c_b = 1 if (p1_d.get("home_city_id") != ven_row["city_id"] and p1_d.get("home_country_code") == ven_row["country_code"]) else 0
-                            is_co_b = 1 if (p1_d.get("home_country_code") != ven_row["country_code"]) else 0
+                            is_v_b = 1 if out.get("is_venue_bridge") else 0
+                            is_c_b = 1 if out.get("is_city_bridge") else 0
+                            is_co_b = 1 if out.get("is_country_bridge") else 0
+                            
                             if is_c_b: city_bridge_counts += 1
                             if is_co_b: country_bridge_counts += 1
 
@@ -1700,12 +1749,16 @@ elif nav == "🏆 Tournament Desk (Delayed)":
                         conn.execute('''
                             INSERT INTO matches (
                                 match_id, venue_id, format_id, is_singles, is_tournament,
+                                is_venue_bridge, is_city_bridge, is_country_bridge,
                                 team_a_p1_id, team_a_p2_id, team_b_p1_id, team_b_p2_id,
                                 score_team_a, score_team_b, set_scores_json, games_winner, games_loser,
                                 pre_rating_a, pre_rating_b, win_expectancy_a, applied_m_c, applied_s_margin,
                                 delta_r_p1, delta_r_p2, delta_r_p3, delta_r_p4, guardrails_summary, is_retroactive, processed_at, match_timestamp
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                         ''', (m_id, t_data["venue_id"], tm["format_id"], tm["is_singles"], 1,
+                              1 if out.get("is_venue_bridge") else 0,
+                              1 if out.get("is_city_bridge") else 0,
+                              1 if out.get("is_country_bridge") else 0,
                               tm["team_a_p1_id"], tm["team_a_p2_id"], tm["team_b_p1_id"], tm["team_b_p2_id"],
                               tm["score_team_a"], tm["score_team_b"], tm["games_winner"], tm["games_loser"],
                               out["ta_r"], out["tb_r"], out["ea"], out["applied_m_c"], out["mov"],

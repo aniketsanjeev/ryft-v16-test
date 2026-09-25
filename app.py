@@ -90,7 +90,7 @@ def init_db():
         cats = [("Beginner", 0.0, 0.999, 1, 1.0), ("Beginner+", 1.0, 1.999, 2, 1.0), ("Intermediate", 2.0, 3.499, 3, 1.0), ("Intermediate+", 3.5, 4.499, 4, 1.0), ("Advanced", 4.5, 5.499, 5, 1.0), ("Pro", 5.5, 6.299, 6, 1.0), ("Elite", 6.3, 7.0, 7, 1.0)]
         for cn, cmn, cmx, so, sm in cats: c.execute("INSERT OR IGNORE INTO rating_categories VALUES (?,?,?,?,?)", (cn, cmn, cmx, so, sm))
 
-    # All 18 Official V.16 Formats
+    # All 20 Official Match Formats Active for Standalone & Session Workflows
     official_formats = [
         ("STD_B03", "Best of 3 Sets", "MULTI_SET", 1.00, None, None, 0, 1),
         ("STD_B05", "Best of 5 Sets", "MULTI_SET", 1.00, None, None, 0, 1),
@@ -109,7 +109,9 @@ def init_db():
         ("AMER_24", "Americano 24 Points", "AMERICANO", 0.30, None, 24, 0, 1),
         ("MEX_24", "Mexicano 24 Points", "MEXICANO", 0.30, None, 24, 0, 1),
         ("AMER_28", "Americano 28 Points", "AMERICANO", 0.30, None, 28, 0, 1),
-        ("MEX_28", "Mexicano 28 Points", "MEXICANO", 0.30, None, 28, 0, 1)
+        ("MEX_28", "Mexicano 28 Points", "MEXICANO", 0.30, None, 28, 0, 1),
+        ("AMER_32", "Americano 32 Points", "AMERICANO", 0.35, None, 32, 0, 1),
+        ("MEX_32", "Mexicano 32 Points", "MEXICANO", 0.35, None, 32, 0, 1)
     ]
     for fid, fname, cat, mc, tg, tp, is_sb, is_a in official_formats:
         c.execute("""INSERT INTO match_formats (format_id, format_name, category, mc_weight, target_games, total_points, is_session_bound, is_active)
@@ -147,8 +149,8 @@ def seed_factory_parameters(cursor, overwrite_existing=False):
         ("ANTI_CARRY_MULT_TIER_1", 0.50, 1, "Anti-Carry Dampener 1", "Multiplier applied if Tier 1 carry breached.", "0.50 = 50% gain reduction.", "4. Partner Guardrails"),
         ("ANTI_CARRY_GAP_TIER_2", 2.50, 1, "Anti-Carry Gap Threshold 2", "Min gap to trigger 25% carry dampening.", "Extreme tow jobs.", "4. Partner Guardrails"),
         ("ANTI_CARRY_MULT_TIER_2", 0.25, 1, "Anti-Carry Dampener 2", "Multiplier applied if Tier 2 carry breached.", "0.25 = 75% gain reduction.", "4. Partner Guardrails"),
-        ("MAX_24H_PAIRWISE_EXCHANGE_CAP", 0.150, 1, "24H Pairwise Cap", "Max net transfer between specific opponent cluster in 24h.", "Targeted anti-collusion.", "5. Exchange Caps & Security"),
-        ("MAX_24H_GLOBAL_CASUAL_CAP", 0.250, 1, "24H Global Casual Cap", "Max net casual points across all opponents in 24h.", "Daily movement governor.", "5. Exchange Caps & Security"),
+        ("MAX_24H_PAIRWISE_EXCHANGE_CAP", 0.150, 1, "24H Pairwise Anti-Collusion Cap", "Max net transfer between specific opponent cluster in 24h.", "Targeted anti-collusion.", "5. Exchange Caps & Security"),
+        ("MAX_24H_GLOBAL_CASUAL_CAP", 0.250, 1, "24H Global Daily Casual Governor", "Max cumulative net casual points across all opponents in 24h.", "Macro daily movement governor.", "5. Exchange Caps & Security"),
         ("MAX_24H_EXCHANGE_CAP", 0.150, 1, "24H Casual Cap (Legacy)", "Fallback single-window cap ceiling.", "Legacy parameter.", "5. Exchange Caps & Security"),
         ("PROVISIONAL_CAP_MULTIPLIER", 2.5, 1, "Provisional Cap Relaxer", "Multiplier on 24H cap for PRs.", "Allows accelerated placement.", "5. Exchange Caps & Security"),
         ("SESSION_EXCHANGE_CAP", 0.300, 1, "Verified Session Cap", "Cap for verified club events.", "Doubles point limits for mixers.", "5. Exchange Caps & Security"),
@@ -178,7 +180,28 @@ def seed_factory_parameters(cursor, overwrite_existing=False):
         ("ISLAND_ACCURACY_CAP", 80.0, 1, "Island Geographic Cap", "Max accuracy if City has 0 bridges.", "Caps accuracy.", "7. Accuracy & Tri-Gates"),
         ("BRIDGE_RD_THRESHOLD", 80.0, 1, "Bridge Max RD", "Max RD to qualify as Bridge.", "Count if RD <= 80.", "8. Hawking Macro"),
         ("BRIDGE_MIN_MATCHES", 5, 1, "Bridge Min Matches", "Away matches required to link cities.", "Matches required before linking.", "8. Hawking Macro"),
-        ("CIRCUIT_BREAKER", 0.0250, 1, "Auto Cron Safety Ceiling", "Max shift per weekly cycle.", "Limits automated macro shifts.", "8. Hawking Macro")
+        ("CIRCUIT_BREAKER", 0.0250, 1, "Auto Cron Safety Ceiling", "Max shift per weekly cycle.", "Limits automated macro shifts.", "8. Hawking Macro"),
+        # Format Weights Configuration
+        ("MC_STD_B03", 1.000, 1, "Format Multiplier: Best of 3 Sets", "Confidence multiplier for Best of 3 Sets.", "Full standard match.", "9. Format Multipliers (M_C)"),
+        ("MC_STD_B05", 1.000, 1, "Format Multiplier: Best of 5 Sets", "Confidence multiplier for Best of 5 Sets.", "Full standard match.", "9. Format Multipliers (M_C)"),
+        ("MC_RACE_4", 0.500, 1, "Format Multiplier: Race to 4 Games", "Confidence multiplier for Race to 4 Games.", "Short sprint set.", "9. Format Multipliers (M_C)"),
+        ("MC_RACE_5", 0.600, 1, "Format Multiplier: Race to 5 Games", "Confidence multiplier for Race to 5 Games.", "Sprint set.", "9. Format Multipliers (M_C)"),
+        ("MC_RACE_6", 0.700, 1, "Format Multiplier: Race to 6 Games", "Confidence multiplier for Race to 6 Games.", "Standard single set.", "9. Format Multipliers (M_C)"),
+        ("MC_RACE_7", 0.800, 1, "Format Multiplier: Race to 7 Games", "Confidence multiplier for Race to 7 Games.", "Extended single set.", "9. Format Multipliers (M_C)"),
+        ("MC_RACE_9", 0.800, 1, "Format Multiplier: Race to 9 Games", "Confidence multiplier for Race to 9 Games.", "Pro set.", "9. Format Multipliers (M_C)"),
+        ("MC_RACE_11", 0.900, 1, "Format Multiplier: Race to 11 Games", "Confidence multiplier for Race to 11 Games.", "Extended pro set.", "9. Format Multipliers (M_C)"),
+        ("MC_AMER_12", 0.300, 1, "Format Multiplier: Americano 12", "Confidence multiplier for Americano 12.", "Social mixer weight.", "9. Format Multipliers (M_C)"),
+        ("MC_MEX_12", 0.300, 1, "Format Multiplier: Mexicano 12", "Confidence multiplier for Mexicano 12.", "Social mixer weight.", "9. Format Multipliers (M_C)"),
+        ("MC_AMER_16", 0.300, 1, "Format Multiplier: Americano 16", "Confidence multiplier for Americano 16.", "Social mixer weight.", "9. Format Multipliers (M_C)"),
+        ("MC_MEX_16", 0.300, 1, "Format Multiplier: Mexicano 16", "Confidence multiplier for Mexicano 16.", "Social mixer weight.", "9. Format Multipliers (M_C)"),
+        ("MC_AMER_20", 0.300, 1, "Format Multiplier: Americano 20", "Confidence multiplier for Americano 20.", "Social mixer weight.", "9. Format Multipliers (M_C)"),
+        ("MC_MEX_20", 0.300, 1, "Format Multiplier: Mexicano 20", "Confidence multiplier for Mexicano 20.", "Social mixer weight.", "9. Format Multipliers (M_C)"),
+        ("MC_AMER_24", 0.300, 1, "Format Multiplier: Americano 24", "Confidence multiplier for Americano 24.", "Social mixer weight.", "9. Format Multipliers (M_C)"),
+        ("MC_MEX_24", 0.300, 1, "Format Multiplier: Mexicano 24", "Confidence multiplier for Mexicano 24.", "Social mixer weight.", "9. Format Multipliers (M_C)"),
+        ("MC_AMER_28", 0.300, 1, "Format Multiplier: Americano 28", "Confidence multiplier for Americano 28.", "Social mixer weight.", "9. Format Multipliers (M_C)"),
+        ("MC_MEX_28", 0.300, 1, "Format Multiplier: Mexicano 28", "Confidence multiplier for Mexicano 28.", "Social mixer weight.", "9. Format Multipliers (M_C)"),
+        ("MC_AMER_32", 0.350, 1, "Format Multiplier: Americano 32", "Confidence multiplier for Americano 32.", "Social mixer weight.", "9. Format Multipliers (M_C)"),
+        ("MC_MEX_32", 0.350, 1, "Format Multiplier: Mexicano 32", "Confidence multiplier for Mexicano 32.", "Social mixer weight.", "9. Format Multipliers (M_C)")
     ]
     for k, v, act, tit, desc, tune, grp in master_params:
         cursor.execute("INSERT INTO global_config VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(param_key) DO UPDATE SET title=excluded.title, description=excluded.description, tuning_guide=excluded.tuning_guide, module_group=excluded.module_group", (k, v, act, tit, desc, tune, grp))
@@ -322,20 +345,23 @@ class RyftV16:
 
         cfg = cls.get_configs(conn=conn)
         p_exp = cfg.get("POWER_MEAN_P", 3.0)
-        g_w, g_l = max(g_w_raw, g_l_raw + 1), g_l_raw
+        
+        is_draw = (s_a == s_b)
+        g_w, g_l = max(g_w_raw, g_l_raw + (0 if is_draw else 1)), g_l_raw
         
         ta_r = float(p1.get("latent_mmr", 3.0)) if is_singles else ((float(p1.get("latent_mmr", 3.0))**p_exp + float(p2.get("latent_mmr", 3.0))**p_exp) / 2.0)**(1.0 / p_exp)
         tb_r = float(p3.get("latent_mmr", 3.0)) if is_singles else ((float(p3.get("latent_mmr", 3.0))**p_exp + float(p4.get("latent_mmr", 3.0))**p_exp) / 2.0)**(1.0 / p_exp)
         
         ea = 1.0 / (1.0 + 10.0**((tb_r - ta_r) / cfg.get("LOGISTIC_BETA", 2.0)))
-        act_a = 1.0 if s_a > s_b else (0.5 if s_a == s_b else 0.0)
+        act_a = 0.5 if is_draw else (1.0 if s_a > s_b else 0.0)
         
         tot_g = g_w + g_l
         m_base, m_scale = cfg.get("MARGIN_BASE", 0.80), cfg.get("MARGIN_SCALE", 0.40)
         s_margin = max(0.80, min(1.20, m_base + (m_scale * ((g_w - g_l) / tot_g)) if tot_g > 0 else 1.0))
         
         fmt_row = conn.execute("SELECT mc_weight FROM match_formats WHERE format_id = ?", (fmt_id,)).fetchone()
-        mc = float(fmt_row["mc_weight"]) if fmt_row else 1.00
+        db_mc = float(fmt_row["mc_weight"]) if fmt_row else 1.00
+        mc = float(cfg.get(f"MC_{fmt_id}", db_mc))
 
         opp_rd_b = max(float(p3.get("rating_deviation", 350.0)), float(p4.get("rating_deviation", 350.0))) if not is_singles else float(p3.get("rating_deviation", 350.0))
         opp_rd_a = max(float(p1.get("rating_deviation", 350.0)), float(p2.get("rating_deviation", 350.0))) if not is_singles else float(p1.get("rating_deviation", 350.0))
@@ -388,9 +414,17 @@ class RyftV16:
             opp_team_r = tb_r if is_a else ta_r
             partner_gap = abs(r - float(partner.get("latent_mmr", 3.0))) if (not is_singles and partner) else 0.0
 
+            # --- EVALUATION ROUTING: QUARANTINE vs. DRAW vs. WIN vs. LOSS ---
             if is_quar:
                 raw_d = 0.000; flags.append("[ALERT_QUARANTINE_ISOLATION_ACTIVE]")
+            elif is_draw:
+                # Dead-heat draw: deltas are governed purely by outcome residual (0.5000 - E)
+                # Underdogs receive earned positive deltas; favorites absorb penalty.
+                # Neither is clamped by win/loss monotonicity.
+                raw_d = standard_einstein_delta
+                flags.append("DRAW_PARITY_EXCHANGE")
             elif won:
+                # Win evaluation logic (Strict non-negative floor for verified players)
                 if prov and s_a != s_b:
                     actual_game_ratio = (g_w_raw + 0.5) / (g_l_raw + 0.5)
                     r_perf_team = opp_team_r + cfg.get("LOGISTIC_BETA", 2.0) * math.log10(actual_game_ratio)
@@ -437,7 +471,8 @@ class RyftV16:
                     # Verified phase: Guaranteed non-positive on defeat
                     raw_d = min(0.0000, standard_einstein_delta)
 
-            if not is_singles and partner and not is_quar:
+            # Partner Disparity Dampening (Bits 9 & 10)
+            if not is_singles and partner and not is_quar and not is_draw:
                 gap = abs(r - float(partner.get("latent_mmr", 3.0)))
                 part_prov = bool(partner.get("is_provisional", 1))
                 part_rd = float(partner.get("rating_deviation", 350.0))
@@ -483,7 +518,7 @@ class RyftV16:
 
             # Gated Elevator Blowout Trigger for Placement Cap Bypass
             is_elevator_active = (
-                prov and won and (raw_d > pairwise_cap) and
+                prov and won and not is_draw and (raw_d > pairwise_cap) and
                 (s_margin >= 1.00 or (g_w_raw >= 2 * g_l_raw and g_w_raw >= 4)) and
                 (opp_team_r >= r - 0.50)
             )
@@ -549,8 +584,8 @@ class RyftV16:
             else:
                 new_disp = new_r
 
-            new_c_loss = 0 if won else c_loss + 1
-            if (g_w_raw == 0 and not won):
+            new_c_loss = 0 if (won or is_draw) else c_loss + 1
+            if (g_w_raw == 0 and not won and not is_draw):
                 new_rd = rd; flags.append("[ALERT_ZERO_RESISTANCE_RD_FREEZE]")
             else:
                 raw_new_rd = max(30.0, math.sqrt(1.0 / (1.0 / (rd**2) + (mc * s_margin * (g_opp**2) * omega) / (sig**2))))
@@ -705,7 +740,7 @@ def build_pdf_document():
         ("Bit 6: Game Margin & Inversion Clamp", "S_margin = 0.80 + 0.40 * ((GW_eff - GL) / Total_Games)", "Clamps games to resolve multi-set tiebreak inversions."),
         ("Bit 10: Option A Asymmetric Ice-Out", "Defeat Gap>=2.0 => D_D=0.05 | Win Gap>=2.5 => D_D=0.25", "Slashes anchor loss by up to 95% on freeze-outs."),
         ("Bit 11: Decoupled Bayesian RD Contraction", "RD_new = max(30.0, sqrt(1 / (1/RD^2 + Variance)))", "Buffers uncertainty contraction via cohort Omega factor."),
-        ("Bit 12: Performance Interpolation", "Delta = (R_perf - R) * Alpha", "Rightsizes unrated smurfs directly to true skill in 3-5 matches."),
+        ("Bit 12: Three-Way Rightsizing Routing", "Win vs. Draw (Parity) vs. Loss", "Ensures draws award underdogs positive deltas while blocking loss promotion."),
         ("Bit 13/14: Dual-Cap Casual Headroom & Session Caps", "Rolling Pairwise Cap: 0.150 | Global Casual Governor: 0.250 | Session: 0.300", "Stateful dual-cap structure preventing farm loops while permitting multi-court activity."),
         ("Bit 15: Point-In-Time Tournament Desktop", "Delta_additive = (R_past_perf - R_past) * 1.15", "Asynchronous ingestion calculating deltas via historical timestamps."),
         ("Bit 22: Tikhonov Damping & Affine Diffusion", "W_conf = K / (K + 3.0)", "Scales Hawking macro offsets by bridge traveler count (K)."),
@@ -937,7 +972,7 @@ elif nav == "🎾 Log Matches":
                 all_guardrails = []
                 for pr in sim_out["res"]: all_guardrails.extend(pr["flags"])
 
-                conn.execute('''INSERT INTO matches (match_id, venue_id, format_id, is_singles, is_tournament, is_venue_bridge, is_city_bridge, is_country_bridge, team_a_p1_id, team_a_p2_id, team_b_p1_id, team_b_p2_id, score_team_a, score_team_b, set_scores_json, games_winner, games_loser, pre_rating_a, pre_rating_b, win_expectancy_a, applied_m_c, applied_s_margin, delta_r_p1, delta_r_p2, delta_r_p3, delta_r_p4, guardrails_summary, match_timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (m_id, ven_obj["venue_id"], sel_f["format_id"], 1 if is_singles else 0, 1 if is_tourney else 0, is_v_b, is_c_b, is_co_b, p1_obj["player_id"], p2_obj["player_id"] if not is_singles else None, p3_obj["player_id"], p4_obj["player_id"] if not is_singles else None, sa, sb, json.dumps(sets_data), max(gw, gl), min(gw, gl), sim_out["ta_r"], sim_out["tb_r"], sim_out["ea"], sel_f["mc_weight"], sim_out["mov"], sim_out["res"][0]["delta"], sim_out["res"][2]["delta"] if not is_singles else 0.0, sim_out["res"][1]["delta"], sim_out["res"][3]["delta"] if not is_singles else 0.0, json.dumps(all_guardrails), ts))
+                conn.execute('''INSERT INTO matches (match_id, venue_id, format_id, is_singles, is_tournament, is_venue_bridge, is_city_bridge, is_country_bridge, team_a_p1_id, team_a_p2_id, team_b_p1_id, team_b_p2_id, score_team_a, score_team_b, set_scores_json, games_winner, games_loser, pre_rating_a, pre_rating_b, win_expectancy_a, applied_m_c, applied_s_margin, delta_r_p1, delta_r_p2, delta_r_p3, delta_r_p4, guardrails_summary, match_timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (m_id, ven_obj["venue_id"], sel_f["format_id"], 1 if is_singles else 0, 1 if is_tourney else 0, is_v_b, is_c_b, is_co_b, p1_obj["player_id"], p2_obj["player_id"] if not is_singles else None, p3_obj["player_id"], p4_obj["player_id"] if not is_singles else None, sa, sb, json.dumps(sets_data), max(gw, gl), min(gw, gl), sim_out["ta_r"], sim_out["tb_r"], sim_out["ea"], mc, sim_out["mov"], sim_out["res"][0]["delta"], sim_out["res"][2]["delta"] if not is_singles else 0.0, sim_out["res"][1]["delta"], sim_out["res"][3]["delta"] if not is_singles else 0.0, json.dumps(all_guardrails), ts))
                 for pr in sim_out["res"]:
                     conn.execute('''UPDATE players SET latent_mmr=?, display_rating=?, rating_deviation=?, rating_accuracy_pct=?, accuracy_s_rd=?, accuracy_s_matches=?, accuracy_s_diversity=?, calibration_tier=?, is_provisional=?, consecutive_losses=?, rolling_90d_peak=max(rolling_90d_peak, ?), rolling_180d_peak=max(rolling_180d_peak, ?), rolling_365d_peak=max(rolling_365d_peak, ?), last_match_time=? WHERE player_id=?''', (pr["post_r"], pr["post_disp"], pr["post_rd"], pr["acc"], pr["a_rd"], pr["a_m"], pr["a_d"], pr["tier"], pr["prov"], pr["c_loss"], pr["post_r"], pr["post_r"], pr["post_r"], ts, pr["pid"]))
                     conn.execute('''INSERT INTO match_logs (log_id, match_id, player_id, pre_latent_mmr, post_latent_mmr, pre_display_rating, post_display_rating, pre_rd, post_rd, pre_accuracy_pct, post_accuracy_pct, delta_r, guardrails_triggered, logged_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (f"L_{pr['pid']}_{m_id}", m_id, pr["pid"], pr["pre_r"], pr["post_r"], pr["pre_disp"], pr["post_disp"], pr["pre_rd"], pr["post_rd"], pr["pre_acc"], pr["acc"], pr["delta"], json.dumps(pr["flags"]), ts))
@@ -1160,7 +1195,8 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
                                     sets_recorded.append((s2a, s2b))
                                     if st.checkbox("Deciding Set 3", key=f"s3_chk_{m['session_match_id']}"):
                                         s3c1, s3c2 = st.columns(2)
-                                        s3a = s3c1.number_input(f"Set 3: {ta_players}", 0, 7, 6, key=f"s3a_{m['session_match_id']}"); s3b = s3c2.number_input(f"Set 3: {tb_players}", 0, 7, 4, key=f"s3b_{m['session_match_id']}")
+                                        s3a = s3c1.number_input(f"Set 3: {ta_players}", 0, 7, 6, key=f"s3a_{m['session_match_id']}")
+                                        s3b = s3c2.number_input(f"Set 3: {tb_players}", 0, 7, 4, key=f"s3b_{m['session_match_id']}")
                                         sets_recorded.append((s3a, s3b))
                                     sa, sb = sum(1 for s in sets_recorded if s[0]>s[1]), sum(1 for s in sets_recorded if s[1]>s[0])
                                     gw, gl = sum(x[0] for x in sets_recorded), sum(x[1] for x in sets_recorded)
@@ -1435,7 +1471,7 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
                                 sm["score_team_a"], sm["score_team_b"], sm["set_scores_json"], max(sm["games_winner"], sm["score_team_a"]), min(sm["games_loser"], sm["score_team_b"]),
                                 out["ta_r"], out["tb_r"], out["ea"], out["applied_m_c"], out["mov"],
                                 out["res"][0]["delta"], out["res"][2]["delta"] if not is_sing else 0.0,
-                                out["res"][1]["delta"], out["res"][3]["delta"] if not is_singles else 0.0, json.dumps(all_guardrails), ts))
+                                out["res"][1]["delta"], out["res"][3]["delta"] if not is_sing else 0.0, json.dumps(all_guardrails), ts))
 
                             for pr in out["res"]:
                                 conn.execute("""UPDATE players SET latent_mmr=?, display_rating=?, rating_deviation=?, rating_accuracy_pct=?, calibration_tier=?, is_provisional=?, consecutive_losses=?, rolling_90d_peak=max(rolling_90d_peak, ?), rolling_180d_peak=max(rolling_180d_peak, ?), rolling_365d_peak=max(rolling_365d_peak, ?), last_match_time=? WHERE player_id=?""",
@@ -1968,10 +2004,14 @@ elif nav == "⚙️ Global Config":
                     fc1, fc2, fc3 = st.columns([3, 2, 2])
                     fc1.write(f"**{fmt['format_name']}** (`{fmt['format_id']}`)")
                     fc2.caption(f"Category: {fmt['category']}")
-                    updated_mc[fmt["format_id"]] = new_mc = fc3.number_input("Weight", 0.10, 1.50, float(fmt["mc_weight"]), 0.05, key=f"mc_{fmt['format_id']}")
+                    updated_mc[fmt["format_id"]] = fc3.number_input("Weight", 0.10, 1.50, float(fmt["mc_weight"]), 0.05, key=f"mc_{fmt['format_id']}")
                 if st.form_submit_button("Save Format Confidence Weights ($M_C$)"):
-                    for fid, weight in updated_mc.items(): conn.execute("UPDATE match_formats SET mc_weight = ? WHERE format_id = ?", (weight, fid))
-                    conn.commit(); st.success("Format weights committed!"); st.rerun()
+                    for fid, weight in updated_mc.items():
+                        conn.execute("UPDATE match_formats SET mc_weight = ? WHERE format_id = ?", (weight, fid))
+                        conn.execute("INSERT INTO global_config (param_key, param_value, is_active, title, description, module_group) VALUES (?, ?, 1, ?, ?, '9. Format Multipliers (M_C)') ON CONFLICT(param_key) DO UPDATE SET param_value=excluded.param_value", (f"MC_{fid}", weight, f"M_C {fid}", f"Confidence weight for {fid}"))
+                    conn.commit(); st.success("Format weights committed and synced with Global Config!"); st.rerun()
+
+        render_params_by_group(df, ["9. Format Multipliers (M_C)"])
 
     with tab_mac: render_params_by_group(df, ["1. Core Bounds & Drag", "6. Uncertainty & Rust", "8. Hawking Macro"])
     conn.close()

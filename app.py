@@ -4,6 +4,7 @@ import math
 import json
 import os
 import io
+import uuid
 from datetime import datetime, timezone, date, time
 import pandas as pd
 
@@ -1059,33 +1060,126 @@ elif nav == "🎾 Log Matches":
                     """, unsafe_allow_html=True)
                     if pr["flags"]: st.caption("⚡ " + " | ".join(pr["flags"]))
 
+            # --- HARDENED COMMIT BLOCK FOR STANDALONE MATCH LOGGER ---
             if do_save:
                 conn = get_db_connection()
-                m_id = f"M_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                ts = match_ts_val
-                
-                # Universal geographic bridge indicators evaluated across all 4 positions
-                is_v_b = 1 if sim_out.get("is_venue_bridge") else 0
-                is_c_b = 1 if sim_out.get("is_city_bridge") else 0
-                is_co_b = 1 if sim_out.get("is_country_bridge") else 0
+                try:
+                    # 1. Collision-proof match ID (avoids UNIQUE constraint collisions on rapid submits)
+                    m_id = f"M_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+                    match_dt = datetime.combine(match_date, match_time)
+                    ts = match_dt.isoformat()
 
-                all_guardrails = []
-                for pr in sim_out["res"]: all_guardrails.extend(pr["flags"])
+                    # 2. Universal Bridge Resolution Across All 4 Players
+                    ven_city = ven_obj.get("city_id")
+                    ven_country = ven_obj.get("country_code")
 
-                conn.execute('''INSERT INTO matches (match_id, venue_id, format_id, is_singles, is_tournament, is_venue_bridge, is_city_bridge, is_country_bridge, team_a_p1_id, team_a_p2_id, team_b_p1_id, team_b_p2_id, score_team_a, score_team_b, set_scores_json, games_winner, games_loser, pre_rating_a, pre_rating_b, win_expectancy_a, applied_m_c, applied_s_margin, delta_r_p1, delta_r_p2, delta_r_p3, delta_r_p4, guardrails_summary, match_timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (m_id, ven_obj["venue_id"], sel_f["format_id"], 1 if is_singles else 0, 1 if is_tourney else 0, is_v_b, is_c_b, is_co_b, p1_obj["player_id"], p2_obj["player_id"] if not is_singles else None, p3_obj["player_id"], p4_obj["player_id"] if not is_singles else None, sa, sb, json.dumps(sets_data), max(gw, gl), min(gw, gl), sim_out["ta_r"], sim_out["tb_r"], sim_out["ea"], mc, sim_out["mov"], sim_out["res"][0]["delta"], sim_out["res"][2]["delta"] if not is_singles else 0.0, sim_out["res"][1]["delta"], sim_out["res"][3]["delta"] if not is_singles else 0.0, json.dumps(all_guardrails), ts))
-                for pr in sim_out["res"]:
-                    conn.execute('''UPDATE players SET latent_mmr=?, display_rating=?, rating_deviation=?, rating_accuracy_pct=?, accuracy_s_rd=?, accuracy_s_matches=?, accuracy_s_diversity=?, calibration_tier=?, is_provisional=?, consecutive_losses=?, rolling_90d_peak=max(rolling_90d_peak, ?), rolling_180d_peak=max(rolling_180d_peak, ?), rolling_365d_peak=max(rolling_365d_peak, ?), last_match_time=? WHERE player_id=?''', (pr["post_r"], pr["post_disp"], pr["post_rd"], pr["acc"], pr["a_rd"], pr["a_m"], pr["a_d"], pr["tier"], pr["prov"], pr["c_loss"], pr["post_r"], pr["post_r"], pr["post_r"], ts, pr["pid"]))
-                    conn.execute('''INSERT INTO match_logs (log_id, match_id, player_id, pre_latent_mmr, post_latent_mmr, pre_display_rating, post_display_rating, pre_rd, post_rd, pre_accuracy_pct, post_accuracy_pct, delta_r, guardrails_triggered, logged_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (f"L_{pr['pid']}_{m_id}", m_id, pr["pid"], pr["pre_r"], pr["post_r"], pr["pre_disp"], pr["post_disp"], pr["pre_rd"], pr["post_rd"], pr["pre_acc"], pr["acc"], pr["delta"], json.dumps(pr["flags"]), ts))
+                    is_venue_bridge = 0
+                    is_city_bridge = 0
+                    is_country_bridge = 0
 
-                conn.execute("UPDATE venues SET total_matches_played = total_matches_played + 1 WHERE venue_id = ?", (ven_obj["venue_id"],))
-                if is_c_b: conn.execute("UPDATE venues SET city_bridge_matches_count = city_bridge_matches_count + 1 WHERE venue_id = ?", (ven_obj["venue_id"],))
-                if is_co_b: conn.execute("UPDATE venues SET country_bridge_matches_count = country_bridge_matches_count + 1 WHERE venue_id = ?", (ven_obj["venue_id"],))
-                conn.execute("UPDATE locations SET total_matches_played = total_matches_played + 1 WHERE location_id = ?", (ven_obj["city_id"],))
+                    all_players = [p1_obj, p3_obj] + ([p2_obj, p4_obj] if not is_singles else [])
+                    for p in all_players:
+                        if p:
+                            p_c = p.get("home_city_id")
+                            p_co = p.get("home_country_code")
+                            p_v = p.get("home_venue_id")
 
-                for pid in [p1_obj["player_id"], p3_obj["player_id"]] + ([p2_obj["player_id"], p4_obj["player_id"]] if not is_singles else []):
-                    if pid: RyftV16.sync_player_aggregates(pid, conn=conn)
+                            if p_co and ven_country and p_co != ven_country:
+                                is_country_bridge = 1
+                            if p_c and ven_city and p_c != ven_city:
+                                is_city_bridge = 1
+                            if p_v and p_v != ven_obj["venue_id"] and p_c == ven_city:
+                                is_venue_bridge = 1
 
-                conn.commit(); conn.close(); st.balloons(); st.success("✅ Match successfully committed!"); st.rerun()
+                    # 3. Flatten Guardrails & Sets
+                    all_guardrails = []
+                    for pr in sim_out["res"]:
+                        all_guardrails.extend(pr.get("flags", []))
+
+                    # 4. Atomic INSERT into Matches
+                    conn.execute("""
+                        INSERT INTO matches (
+                            match_id, venue_id, format_id, is_singles, is_tournament,
+                            is_venue_bridge, is_city_bridge, is_country_bridge,
+                            team_a_p1_id, team_a_p2_id, team_b_p1_id, team_b_p2_id,
+                            score_team_a, score_team_b, set_scores_json, games_winner, games_loser,
+                            pre_rating_a, pre_rating_b, win_expectancy_a, applied_m_c, applied_s_margin,
+                            delta_r_p1, delta_r_p2, delta_r_p3, delta_r_p4, guardrails_summary, match_timestamp
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        m_id, ven_obj["venue_id"], sel_f["format_id"],
+                        1 if is_singles else 0, 1 if is_tourney else 0,
+                        is_venue_bridge, is_city_bridge, is_country_bridge,
+                        p1_obj["player_id"], p2_obj["player_id"] if not is_singles else None,
+                        p3_obj["player_id"], p4_obj["player_id"] if not is_singles else None,
+                        sa, sb, json.dumps(sets_data), max(gw, gl), min(gw, gl),
+                        sim_out["ta_r"], sim_out["tb_r"], sim_out["ea"],
+                        sim_out.get("applied_m_c", sel_f.get("mc_weight", 1.0)),
+                        sim_out.get("mov", 1.0),
+                        sim_out["res"][0]["delta"], sim_out["res"][2]["delta"] if not is_singles else 0.0,
+                        sim_out["res"][1]["delta"], sim_out["res"][3]["delta"] if not is_singles else 0.0,
+                        json.dumps(all_guardrails), ts
+                    ))
+
+                    # 5. Update Player Profiles & Match Logs
+                    for pr in sim_out["res"]:
+                        conn.execute("""
+                            UPDATE players SET 
+                                latent_mmr = ?, display_rating = ?, rating_deviation = ?, 
+                                rating_accuracy_pct = ?, accuracy_s_rd = ?, accuracy_s_matches = ?, 
+                                accuracy_s_diversity = ?, calibration_tier = ?, is_provisional = ?, 
+                                consecutive_losses = ?,
+                                rolling_90d_peak = max(rolling_90d_peak, ?), 
+                                rolling_180d_peak = max(rolling_180d_peak, ?), 
+                                rolling_365d_peak = max(rolling_365d_peak, ?), 
+                                last_match_time = ? 
+                            WHERE player_id = ?
+                        """, (
+                            pr["post_r"], pr["post_disp"], pr["post_rd"],
+                            pr["acc"], pr.get("a_rd", 0.0), pr.get("a_m", 0.0),
+                            pr.get("a_d", 0.0), pr["tier"], pr["prov"],
+                            pr["c_loss"], pr["post_r"], pr["post_r"], pr["post_r"],
+                            ts, pr["pid"]
+                        ))
+
+                        conn.execute("""
+                            INSERT INTO match_logs (
+                                log_id, match_id, player_id, pre_latent_mmr, post_latent_mmr, 
+                                pre_display_rating, post_display_rating, pre_rd, post_rd, 
+                                pre_accuracy_pct, post_accuracy_pct, delta_r, guardrails_triggered, logged_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (
+                            f"L_{pr['pid']}_{m_id}", m_id, pr["pid"],
+                            pr["pre_r"], pr["post_r"], pr["pre_disp"], pr["post_disp"],
+                            pr["pre_rd"], pr["post_rd"], pr["pre_acc"], pr["acc"],
+                            pr["delta"], json.dumps(pr.get("flags", [])), ts
+                        ))
+
+                    # 6. Increment Venue and Regional Counters
+                    conn.execute("UPDATE venues SET total_matches_played = total_matches_played + 1 WHERE venue_id = ?", (ven_obj["venue_id"],))
+                    if is_city_bridge:
+                        conn.execute("UPDATE venues SET city_bridge_matches_count = city_bridge_matches_count + 1 WHERE venue_id = ?", (ven_obj["venue_id"],))
+                    if is_country_bridge:
+                        conn.execute("UPDATE venues SET country_bridge_matches_count = country_bridge_matches_count + 1 WHERE venue_id = ?", (ven_obj["venue_id"],))
+                    conn.execute("UPDATE locations SET total_matches_played = total_matches_played + 1 WHERE location_id = ?", (ven_obj["city_id"],))
+
+                    # 7. Sync Player Aggregates Using the Same Active Connection
+                    for p in all_players:
+                        if p and p.get("player_id"):
+                            RyftV16.sync_player_aggregates(p["player_id"], conn=conn)
+
+                    # Commit all writes together atomically
+                    conn.commit()
+                    st.balloons()
+                    st.success("✅ Match successfully committed to database ledger!")
+                    st.rerun()
+
+                except Exception as e:
+                    conn.rollback()
+                    st.error(f"Commit Failed: {str(e)}")
+                    raise e
+                finally:
+                    conn.close()
 
 elif nav == "🗓️ Club Sessions & Mixers":
     st.title("Sessions & Event Traffic Controller")
@@ -1551,7 +1645,7 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
                                 match_timestamp=ts
                             )
 
-                            m_id = f"M_SESS_{sm['session_match_id']}"
+                            m_id = f"M_SESS_{sm['session_match_id']}_{uuid.uuid4().hex[:6]}"
                             is_v_b = 1 if out.get("is_venue_bridge") else 0
                             is_c_b = 1 if out.get("is_city_bridge") else 0
                             is_co_b = 1 if out.get("is_country_bridge") else 0
@@ -1742,7 +1836,7 @@ elif nav == "🏆 Tournament Desk (Delayed)":
                         
                         out = RyftV16.compute_match(mock_p1, mock_p2, mock_p3, mock_p4, tm["score_team_a"], tm["score_team_b"], tm["games_winner"], tm["games_loser"], tm["format_id"], t_data["venue_id"], bool(tm["is_singles"]), is_tournament=True, conn=conn, match_timestamp=ts)
 
-                        m_id = f"M_TRNY_{tm['t_match_id']}"
+                        m_id = f"M_TRNY_{tm['t_match_id']}_{uuid.uuid4().hex[:6]}"
                         all_guardrails = []
                         for pr in out["res"]: all_guardrails.extend(pr["flags"])
 

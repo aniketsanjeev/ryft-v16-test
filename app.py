@@ -2332,265 +2332,697 @@ elif nav == "🏢 Venues & Regions":
     conn.close()
 
 # ==============================================================================
-# 🌐 TAB: HAWKING MACRO ENGINE & REGIONAL NORMALIZATION
+# 🌐 TAB: HAWKING MACRO ENGINE & REGIONAL NORMALIZATION (V2 COMPLETE)
 # ==============================================================================
 elif nav == "🌐 Hawking Engine":
-    st.title("🌐 Hawking Macro Normalization & Regional Diffusion")
-    st.caption("Macro calibration control room: analyze municipal topology, simulate synthetic ghost benchmarks, and deploy staged offsets.")
+  st.title("🌐 Hawking Macro Normalization & Regional Diffusion")
+  st.caption(
+      "Global macro-calibration suite: monitor systemic rating drift, analyze"
+      " national topology, test inter-region parity, and deploy regularized"
+      " offsets."
+  )
 
-    conn = get_db_connection()
+  conn = get_db_connection()
 
-    h_tab1, h_tab2, h_tab3, h_tab4 = st.tabs([
-        "🏙️ Regional Topology & Offsets",
-        "👻 Synthetic Ghost Sandbox",
-        "🕸️ Graph Centrality & Risks",
-        "⚙️ Hawking Governance"
-    ])
+  # --------------------------------------------------------------------------
+  # 0. GLOBAL ECOSYSTEM ANCHOR & SYSTEM MEDIAN STATUS BAR
+  # --------------------------------------------------------------------------
+  verified_ratings = [
+      float(r[0])
+      for r in conn.execute("""
+        SELECT latent_mmr FROM players 
+        WHERE rating_deviation <= 100.0 AND calibration_tier != 'INACTIVE'
+    """).fetchall()
+  ]
 
-    # --------------------------------------------------------------------------
-    # SUB-TAB 1: REGIONAL TOPOLOGY & OFFSETS
-    # --------------------------------------------------------------------------
-    with h_tab1:
-        st.subheader("Municipal Macro Registry")
-        cities = conn.execute("""
-            SELECT l.location_id, l.location_name, p.location_name as parent_country,
-                   l.hawking_offset, l.intransitivity_index, l.readiness_score,
+  sys_median = (
+      float(pd.Series(verified_ratings).median())
+      if verified_ratings
+      else 3.0000
+  )
+  sys_drift = sys_median - 3.0000
+  total_country_bridges = (
+      conn.execute(
+          "SELECT COUNT(*) FROM matches WHERE is_country_bridge = 1"
+      ).fetchone()[0]
+      or 0
+  )
+  total_city_bridges = (
+      conn.execute(
+          "SELECT COUNT(*) FROM matches WHERE is_city_bridge = 1"
+      ).fetchone()[0]
+      or 0
+  )
+
+  g_col1, g_col2, g_col3, g_col4 = st.columns(4)
+  g_col1.metric("Global Anchor Target", "3.0000 MMR")
+  g_col2.metric(
+      "Observed System Median",
+      f"{sys_median:.4f}",
+      delta=f"{sys_drift:+.4f}",
+      delta_color="inverse",
+  )
+  g_col3.metric(
+      "Global Bridge Matches", f"{total_country_bridges + total_city_bridges}"
+  )
+  g_col4.metric(
+      "Macro Drift Status",
+      (
+          "BALANCED"
+          if abs(sys_drift) <= 0.0500
+          else ("CIRCUIT WARNING" if abs(sys_drift) > 0.1000 else "MILD DRIFT")
+      ),
+  )
+
+  st.markdown("---")
+
+  # Navigation Tabs
+  h_tab1, h_tab2, h_tab3, h_tab4, h_tab5 = st.tabs([
+      "🌍 Country & Municipal Hierarchy",
+      "⚔️ Cross-Region Parity Analyzer",
+      "👻 Synthetic Ghost Sandbox",
+      "🕸️ Graph Centrality & Risks",
+      "⚙️ Hawking Governance",
+  ])
+
+  # --------------------------------------------------------------------------
+  # SUB-TAB 1: COUNTRY & MUNICIPAL HIERARCHY
+  # --------------------------------------------------------------------------
+  with h_tab1:
+    st.subheader("National & Municipal Regional Drill-Down")
+
+    countries = conn.execute("""
+            SELECT l.location_id, l.location_name, l.country_code,
                    COUNT(DISTINCT pl.player_id) as total_players,
-                   COUNT(DISTINCT m.match_id) as total_matches,
-                   SUM(CASE WHEN m.is_city_bridge = 1 THEN 1 ELSE 0 END) as city_bridge_matches
+                   COUNT(DISTINCT v.venue_id) as total_venues,
+                   SUM(CASE WHEN m.is_country_bridge = 1 THEN 1 ELSE 0 END) as country_bridges
             FROM locations l
-            LEFT JOIN locations p ON l.parent_id = p.location_id
-            LEFT JOIN venues v ON l.location_id = v.city_id AND v.is_active = 1
-            LEFT JOIN players pl ON l.location_id = pl.home_city_id AND pl.calibration_tier != 'INACTIVE'
+            LEFT JOIN venues v ON v.country_code = l.country_code AND v.is_active = 1
+            LEFT JOIN players pl ON pl.home_country_code = l.country_code AND pl.calibration_tier != 'INACTIVE'
             LEFT JOIN matches m ON v.venue_id = m.venue_id
-            WHERE l.location_type = 'CITY' AND l.is_active = 1
+            WHERE l.location_type = 'COUNTRY' AND l.is_active = 1
             GROUP BY l.location_id
+            ORDER BY total_players DESC
         """).fetchall()
 
-        if not cities:
-            st.info("No municipalities registered in database.")
-        else:
+    if not countries:
+      st.info("No registered countries in database.")
+    else:
+      for co in countries:
+        co_id = co["location_id"]
+        co_name = co["location_name"]
+        co_code = co["country_code"]
+
+        co_ratings = [
+            float(r[0])
+            for r in conn.execute(
+                """
+                    SELECT latent_mmr FROM players 
+                    WHERE home_country_code = ? AND calibration_tier != 'INACTIVE'
+                """,
+                (co_code,),
+            ).fetchall()
+        ]
+        co_median = (
+            float(pd.Series(co_ratings).median()) if co_ratings else 0.0000
+        )
+
+        with st.expander(
+            f"🌍 {co_name} ({co_code}) — {len(co_ratings)} Players | National"
+            f" Median: {co_median:.4f} MMR"
+        ):
+          ck1, ck2, ck3, ck4 = st.columns(4)
+          ck1.metric("Venues Operating", co["total_venues"])
+          ck2.metric("National Median MMR", f"{co_median:.4f}")
+          ck3.metric("Country Bridges", co["country_bridges"])
+          ck4.metric(
+              "Deviation from Anchor", f"{(co_median - 3.0000):+.4f} vs 3.000"
+          )
+
+          st.markdown("#### Municipal Clusters in " + co_name)
+
+          cities = conn.execute(
+              """
+                        SELECT l.location_id, l.location_name, l.hawking_offset, l.intransitivity_index, l.readiness_score,
+                               COUNT(DISTINCT pl.player_id) as total_players,
+                               COUNT(DISTINCT m.match_id) as total_matches
+                        FROM locations l
+                        LEFT JOIN venues v ON l.location_id = v.city_id AND v.is_active = 1
+                        LEFT JOIN players pl ON l.location_id = pl.home_city_id AND pl.calibration_tier != 'INACTIVE'
+                        LEFT JOIN matches m ON v.venue_id = m.venue_id
+                        WHERE l.parent_id = ? AND l.location_type = 'CITY' AND l.is_active = 1
+                        GROUP BY l.location_id
+                    """,
+              (co_id,),
+          ).fetchall()
+
+          if not cities:
+            st.info(f"No municipalities configured under {co_name}.")
+          else:
             for ci in cities:
-                cid = ci["location_id"]
-                c_name = ci["location_name"]
-                country = ci["parent_country"] or "Unknown"
-                n_players = ci["total_players"]
-                n_matches = ci["total_matches"]
+              cid = ci["location_id"]
+              c_name = ci["location_name"]
+              n_players = ci["total_players"]
+              n_matches = ci["total_matches"]
 
-                k_bridges = conn.execute("""
-                    SELECT COUNT(DISTINCT p.player_id) 
-                    FROM players p 
-                    JOIN match_logs ml ON p.player_id = ml.player_id
-                    JOIN matches m ON ml.match_id = m.match_id
-                    WHERE p.home_city_id = ? AND p.rating_deviation <= 80.0 AND m.is_city_bridge = 1
-                """, (cid,)).fetchone()[0]
+              k_bridges = conn.execute(
+                  """
+                                SELECT COUNT(DISTINCT p.player_id) 
+                                FROM players p 
+                                JOIN match_logs ml ON p.player_id = ml.player_id
+                                JOIN matches m ON ml.match_id = m.match_id
+                                WHERE p.home_city_id = ? AND p.rating_deviation <= 80.0 AND m.is_city_bridge = 1
+                            """,
+                  (cid,),
+              ).fetchone()[0]
 
-                diag = evaluate_municipal_readiness(n_players, n_matches, k_bridges)
-                it_val = calculate_intransitivity(cid, conn)
-                conn.execute("""
-                    UPDATE locations 
-                    SET readiness_score = ?, intransitivity_index = ?, intransitivity_idx = ?, active_bridge_count = ?
-                    WHERE location_id = ?
-                """, (diag["readiness_pct"], it_val, it_val, k_bridges, cid))
-                conn.commit()
+              diag = evaluate_municipal_readiness(
+                  n_players, n_matches, k_bridges
+              )
+              it_val = calculate_intransitivity(cid, conn)
+              conn.execute(
+                  "UPDATE locations SET readiness_score = ?,"
+                  " intransitivity_index = ?, intransitivity_idx = ?,"
+                  " active_bridge_count = ? WHERE location_id = ?",
+                  (diag["readiness_pct"], it_val, it_val, k_bridges, cid),
+              )
+              conn.commit()
 
-                with st.expander(f"🏙️ {c_name} ({country}) — Readiness: {diag['readiness_pct']}% [{diag['status']}]"):
-                    m1, m2, m3, m4, m5 = st.columns(5)
-                    m1.metric("Registered Players", n_players)
-                    m2.metric("Matches Hosted", n_matches)
-                    m3.metric("Bridge Nodes (K)", k_bridges)
-                    m4.metric("Intransitivity (I_T)", f"{it_val:.4f}")
-                    m5.metric("Current Offset", f"{ci['hawking_offset']:+.4f}")
+              with st.expander(
+                  f"🏙️ {c_name} — Readiness: {diag['readiness_pct']}%"
+                  f" [{diag['status']}]"
+              ):
+                m1, m2, m3, m4, m5 = st.columns(5)
+                m1.metric("Players", n_players)
+                m2.metric("Matches Hosted", n_matches)
+                m3.metric("Bridge Nodes (K)", k_bridges)
+                m4.metric("Intransitivity", f"{it_val:.4f}")
+                m5.metric("Current Offset", f"{ci['hawking_offset']:+.4f}")
 
-                    st.markdown("#### Macro Calibration Pathway")
-                    pipe_col1, pipe_col2 = st.columns([2, 1])
+                st.markdown("##### Macro Calibration Pathway")
+                pcol1, pcol2 = st.columns([2, 1])
+                calc_mode = pcol1.selectbox(
+                    f"Calculation Mode ({c_name})",
+                    [
+                        "Path A: Empirical Bridge Diffusion (K ≥ 1)",
+                        "Path B: Synthetic Ghost Sandbox (K = 0 Islands)",
+                        "Path C: Dynamic Hybrid Synthesis",
+                    ],
+                    key=f"mode_{cid}",
+                )
 
-                    calc_mode = pipe_col1.selectbox(
-                        f"Calculation Mode ({c_name})",
-                        [
-                            "Path A: Empirical Bridge Diffusion (K ≥ 1)",
-                            "Path B: Synthetic Ghost Sandbox (K = 0 Islands)",
-                            "Path C: Dynamic Hybrid Synthesis"
-                        ],
-                        key=f"mode_{cid}"
+                local_ratings_rows = conn.execute(
+                    """
+                                    SELECT latent_mmr FROM players 
+                                    WHERE home_city_id = ? AND rating_deviation <= 100.0 AND calibration_tier != 'INACTIVE'
+                                """,
+                    (cid,),
+                ).fetchall()
+                local_ratings = [float(r[0]) for r in local_ratings_rows]
+                suggested_shift = 0.0000
+
+                if "Path A" in calc_mode:
+                  if k_bridges == 0:
+                    st.warning(
+                        "⚠️ Path A requires K ≥ 1 Bridge Nodes. Current K = 0."
+                    )
+                    suggested_shift = 0.0000
+                  else:
+                    w_c = diag["w_conf"]
+                    suggested_shift = round(-0.0300 * w_c, 4)
+                    st.info(
+                        f"Bridge Diffusion Active: K={k_bridges} ➔"
+                        f" W_conf={w_c:.4f}. Suggested Shift:"
+                        f" {suggested_shift:+.4f}"
                     )
 
-                    local_ratings_rows = conn.execute("""
-                        SELECT latent_mmr FROM players 
-                        WHERE home_city_id = ? AND rating_deviation <= 100.0 AND calibration_tier != 'INACTIVE'
-                        ORDER BY latent_mmr DESC
-                    """, (cid,)).fetchall()
-                    local_ratings = [float(r[0]) for r in local_ratings_rows]
+                elif "Path B" in calc_mode:
+                  ghosts = [
+                      dict(g)
+                      for g in conn.execute(
+                          "SELECT * FROM synthetic_ghosts WHERE is_active = 1"
+                      ).fetchall()
+                  ]
+                  if not local_ratings:
+                    st.error(
+                        "No verified players available in city to simulate."
+                    )
+                  else:
+                    sim_res = run_ghost_monte_carlo(
+                        local_ratings, ghosts, n_sims=5000
+                    )
+                    suggested_shift = sim_res["proposed_offset"]
+                    st.success(
+                        f"Ghost Ensemble Win Rate:"
+                        f" {sim_res['ensemble_win_rate']*100:.1f}% ➔ Projected"
+                        f" Offset: {suggested_shift:+.4f}"
+                    )
 
-                    suggested_shift = 0.0000
+                elif "Path C" in calc_mode:
+                  ghosts = [
+                      dict(g)
+                      for g in conn.execute(
+                          "SELECT * FROM synthetic_ghosts WHERE is_active = 1"
+                      ).fetchall()
+                  ]
+                  sim_res = (
+                      run_ghost_monte_carlo(local_ratings, ghosts, n_sims=5000)
+                      if local_ratings
+                      else {"proposed_offset": 0.0}
+                  )
+                  w_c = diag["w_conf"]
+                  shift_a = -0.0300 * w_c
+                  shift_b = sim_res["proposed_offset"]
+                  suggested_shift = round(
+                      (w_c * shift_a) + ((1.0 - w_c) * shift_b), 4
+                  )
+                  st.info(
+                      f"Hybrid Blend (W_conf: {w_c:.2f}): Bridge={shift_a:+.4f}"
+                      f" | Ghost={shift_b:+.4f} ➔ Blended:"
+                      f" {suggested_shift:+.4f}"
+                  )
 
-                    if "Path A" in calc_mode:
-                        if k_bridges == 0:
-                            st.warning("⚠️ Path A requires K ≥ 1 Bridge Nodes. Current K = 0. Tikhonov confidence = 0.0000.")
-                            suggested_shift = 0.0000
-                        else:
-                            w_c = diag["w_conf"]
-                            suggested_shift = round(-0.0300 * w_c, 4)
-                            st.info(f"Empirical Bridge calculation active: K={k_bridges} ➔ W_conf={w_c:.4f}. Suggested Shift: {suggested_shift:+.4f}")
+                # STAGED REVIEW & DEPLOYMENT DRAWER
+                st.markdown("---")
+                with st.expander(
+                    f"🔍 Review & Deploy Offset for {c_name}", expanded=False
+                ):
+                  st.markdown(
+                      "**Deployment Rules:** Provisional (RD > 100) receive"
+                      " `+0.0000`. Players $\le 4.5$ scale affinely ($R/4.5$)."
+                      " Elite Pros ($> 4.5$) scale via Jacobian Elasticity."
+                  )
 
-                    elif "Path B" in calc_mode:
-                        ghosts = conn.execute("SELECT * FROM synthetic_ghosts WHERE is_active = 1").fetchall()
-                        ghost_list = [dict(g) for g in ghosts]
-                        if len(local_ratings) == 0:
-                            st.error("No verified players (RD ≤ 100.0) found in this city to simulate against ghosts.")
-                        else:
-                            sim_res = run_ghost_monte_carlo(local_ratings, ghost_list, n_sims=5000)
-                            suggested_shift = sim_res["proposed_offset"]
-                            st.success(f"Ghost Ensemble Win Rate: {sim_res['ensemble_win_rate']*100:.1f}% ➔ Projected Offset: {suggested_shift:+.4f}")
+                  approved_step = st.number_input(
+                      f"Approved Step ({c_name})",
+                      value=float(suggested_shift),
+                      step=0.0050,
+                      format="%.4f",
+                      key=f"step_{cid}",
+                  )
 
-                    elif "Path C" in calc_mode:
-                        ghosts = conn.execute("SELECT * FROM synthetic_ghosts WHERE is_active = 1").fetchall()
-                        ghost_list = [dict(g) for g in ghosts]
-                        sim_res = run_ghost_monte_carlo(local_ratings, ghost_list, n_sims=5000) if local_ratings else {"proposed_offset": 0.0}
-                        w_c = diag["w_conf"]
-                        shift_a = -0.0300 * w_c
-                        shift_b = sim_res["proposed_offset"]
-                        suggested_shift = round((w_c * shift_a) + ((1.0 - w_c) * shift_b), 4)
-                        st.info(f"Hybrid Blend (W_conf: {w_c:.2f}): Bridge={shift_a:+.4f} | Ghost={shift_b:+.4f} ➔ Blended: {suggested_shift:+.4f}")
+                  affected = conn.execute(
+                      """
+                                        SELECT player_id, display_name, latent_mmr, rating_deviation, calibration_tier 
+                                        FROM players WHERE home_city_id = ? AND calibration_tier != 'INACTIVE'
+                                        ORDER BY latent_mmr DESC
+                                    """,
+                      (cid,),
+                  ).fetchall()
 
-                    st.markdown("---")
-                    with st.expander(f"🔍 Review & Deploy Offset for {c_name}", expanded=False):
-                        st.markdown(
-                            "**Deployment Guardrails:** Provisional beginners (RD > 100) receive `+0.0000` (Firewall). "
-                            "Players $\le 4.5$ scale affinely ($R/4.5$). Elite pros ($> 4.5$) scale via Jacobian Elasticity."
+                  p_data = []
+                  for p in affected:
+                    delta = calculate_hawking_player_delta(
+                        float(p["latent_mmr"]),
+                        float(p["rating_deviation"]),
+                        approved_step,
+                    )
+                    p_data.append({
+                        "Player": p["display_name"],
+                        "Pre MMR": f"{p['latent_mmr']:.4f}",
+                        "RD": f"{p['rating_deviation']:.1f}",
+                        "Tier": p["calibration_tier"],
+                        "Applied ΔR": f"{delta:+.4f}",
+                        "Post MMR": f"{(p['latent_mmr'] + delta):.4f}",
+                        "Guardrail": (
+                            "Provisional Firewall"
+                            if p["rating_deviation"] > 100.0
+                            else (
+                                "Jacobian Elasticity"
+                                if p["latent_mmr"] > 4.5
+                                else "Affine Scaling"
+                            )
+                        ),
+                    })
+
+                  if p_data:
+                    st.dataframe(pd.DataFrame(p_data), use_container_width=True)
+
+                  if st.button(
+                      f"🚀 Approve & Deploy {approved_step:+.4f} to {c_name}",
+                      type="primary",
+                      key=f"btn_{cid}",
+                  ):
+                    try:
+                      for p in affected:
+                        delta = calculate_hawking_player_delta(
+                            float(p["latent_mmr"]),
+                            float(p["rating_deviation"]),
+                            approved_step,
                         )
+                        if delta != 0.0:
+                          conn.execute(
+                              """
+                                                    UPDATE players SET 
+                                                        latent_mmr = latent_mmr + ?,
+                                                        display_rating = display_rating + ?,
+                                                        rolling_90d_peak = rolling_90d_peak + ?,
+                                                        tournament_floor = tournament_floor + ?,
+                                                        tournament_floor_rating = tournament_floor_rating + ?
+                                                    WHERE player_id = ?
+                                                """,
+                              (
+                                  delta,
+                                  delta,
+                                  delta,
+                                  delta,
+                                  delta,
+                                  p["player_id"],
+                              ),
+                          )
 
-                        c_dep1, c_dep2 = st.columns([2, 1])
-                        approved_step = c_dep1.number_input(
-                            f"Approved Offset Step ({c_name})",
-                            value=float(suggested_shift),
-                            step=0.0050,
-                            format="%.4f",
-                            key=f"step_{cid}"
-                        )
+                          log_id = f"L_HAWKING_{p['player_id']}_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:4]}"
+                          conn.execute(
+                              """
+                                                    INSERT INTO match_logs (
+                                                        log_id, match_id, player_id, pre_latent_mmr, post_latent_mmr,
+                                                        pre_display_rating, post_display_rating, pre_rd, post_rd,
+                                                        pre_accuracy_pct, post_accuracy_pct, delta_r, guardrails_triggered, logged_at
+                                                    ) VALUES (?, 'HAWKING_SYNC', ?, ?, ?, ?, ?, ?, ?, 0.0, 0.0, ?, ?, CURRENT_TIMESTAMP)
+                                                """,
+                              (
+                                  log_id,
+                                  p["player_id"],
+                                  p["latent_mmr"],
+                                  p["latent_mmr"] + delta,
+                                  p["latent_mmr"],
+                                  p["latent_mmr"] + delta,
+                                  p["rating_deviation"],
+                                  p["rating_deviation"],
+                                  delta,
+                                  json.dumps(["GLOBAL_HAWKING_SYNC"]),
+                              ),
+                          )
 
-                        affected_players = conn.execute("""
-                            SELECT player_id, display_name, latent_mmr, rating_deviation, calibration_tier 
-                            FROM players WHERE home_city_id = ? AND calibration_tier != 'INACTIVE'
-                            ORDER BY latent_mmr DESC
-                        """, (cid,)).fetchall()
+                      conn.execute(
+                          "UPDATE locations SET hawking_offset ="
+                          " hawking_offset + ? WHERE location_id = ?",
+                          (approved_step, cid),
+                      )
+                      conn.commit()
+                      st.success(f"Applied offset to {c_name}!")
+                      st.rerun()
+                    except Exception as e:
+                      conn.rollback()
+                      st.error(f"Deployment failed: {str(e)}")
 
-                        preview_data = []
-                        for p in affected_players:
-                            delta = calculate_hawking_player_delta(float(p["latent_mmr"]), float(p["rating_deviation"]), approved_step)
-                            preview_data.append({
-                                "Player": p["display_name"],
-                                "Pre MMR": f"{p['latent_mmr']:.4f}",
-                                "RD": f"{p['rating_deviation']:.1f}",
-                                "Tier": p["calibration_tier"],
-                                "Applied ΔR": f"{delta:+.4f}",
-                                "Post MMR": f"{(p['latent_mmr'] + delta):.4f}",
-                                "Guardrail Rule": "Provisional Firewall" if p["rating_deviation"] > 100.0 else ("Jacobian Elasticity" if p["latent_mmr"] > 4.5 else "Affine Scaling")
-                            })
+  # --------------------------------------------------------------------------
+  # SUB-TAB 2: CROSS-REGION PARITY ANALYZER
+  # --------------------------------------------------------------------------
+  with h_tab2:
+    st.subheader("⚔️ Cross-Region Parity Analyzer & Head-to-Head Duel Sandbox")
+    st.caption(
+        "Quantitatively measure the skill divergence between two territories"
+        " using Monte Carlo clash simulations and direct traveler evidence."
+    )
 
-                        if preview_data:
-                            st.dataframe(pd.DataFrame(preview_data), use_container_width=True)
+    r_type = st.radio(
+        "Comparison Scope",
+        ["City vs City", "Country vs Country"],
+        horizontal=True,
+    )
 
-                        if st.button(f"🚀 Approve & Deploy {approved_step:+.4f} to {c_name}", type="primary", key=f"btn_deploy_{cid}"):
-                            try:
-                                for p in affected_players:
-                                    delta = calculate_hawking_player_delta(float(p["latent_mmr"]), float(p["rating_deviation"]), approved_step)
-                                    if delta != 0.0:
-                                        conn.execute("""
-                                            UPDATE players SET 
-                                                latent_mmr = latent_mmr + ?,
-                                                display_rating = display_rating + ?,
-                                                rolling_90d_peak = rolling_90d_peak + ?,
-                                                tournament_floor = tournament_floor + ?,
-                                                tournament_floor_rating = tournament_floor_rating + ?
-                                            WHERE player_id = ?
-                                        """, (delta, delta, delta, delta, delta, p["player_id"]))
+    all_locs = conn.execute("""
+            SELECT location_id, location_name, location_type, country_code FROM locations 
+            WHERE is_active = 1 ORDER BY location_name ASC
+        """).fetchall()
 
-                                        log_id = f"L_HAWKING_{p['player_id']}_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:4]}"
-                                        conn.execute("""
-                                            INSERT INTO match_logs (
-                                                log_id, match_id, player_id, pre_latent_mmr, post_latent_mmr,
-                                                pre_display_rating, post_display_rating, pre_rd, post_rd,
-                                                pre_accuracy_pct, post_accuracy_pct, delta_r, guardrails_triggered, logged_at
-                                            ) VALUES (?, 'HAWKING_SYNC', ?, ?, ?, ?, ?, ?, ?, 0.0, 0.0, ?, ?, CURRENT_TIMESTAMP)
-                                        """, (
-                                            log_id, p["player_id"], p["latent_mmr"], p["latent_mmr"] + delta,
-                                            p["latent_mmr"], p["latent_mmr"] + delta, p["rating_deviation"],
-                                            p["rating_deviation"], delta, json.dumps(["GLOBAL_HAWKING_SYNC"])
-                                        ))
+    if r_type == "City vs City":
+      opts = [l for l in all_locs if l["location_type"] == "CITY"]
+    else:
+      opts = [l for l in all_locs if l["location_type"] == "COUNTRY"]
 
-                                conn.execute("""
-                                    UPDATE locations SET hawking_offset = hawking_offset + ? WHERE location_id = ?
-                                """, (approved_step, cid))
+    opt_dict = {o["location_name"]: o["location_id"] for o in opts}
 
-                                conn.commit()
-                                st.success(f"Successfully applied {approved_step:+.4f} offset to {c_name}!")
-                                st.rerun()
-                            except Exception as e:
-                                conn.rollback()
-                                st.error(f"Deployment failed: {str(e)}")
+    if len(opts) >= 2:
+      col_a, col_b = st.columns(2)
+      reg_a_name = col_a.selectbox(
+          "Select Region A", list(opt_dict.keys()), index=0
+      )
+      reg_b_name = col_b.selectbox(
+          "Select Region B",
+          list(opt_dict.keys()),
+          index=min(1, len(opts) - 1),
+      )
 
-    # --------------------------------------------------------------------------
-    # SUB-TAB 2: SYNTHETIC GHOST SANDBOX
-    # --------------------------------------------------------------------------
-    with h_tab2:
-        st.subheader("Ensemble AI Ghost Benchmark Directory")
-        st.caption("Manage synthetic bot profiles and execute on-demand Monte Carlo shadow simulations.")
+      id_a = opt_dict[reg_a_name]
+      id_b = opt_dict[reg_b_name]
 
-        ghost_records = conn.execute("SELECT * FROM synthetic_ghosts").fetchall()
-        g_cols = st.columns(len(ghost_records) if ghost_records else 1)
-        for i, g in enumerate(ghost_records):
-            with g_cols[i]:
-                st.markdown(f"### 🤖 {g['ghost_name']}")
-                st.write(f"**Playstyle:** `{g['playstyle']}`")
-                st.write(f"**Baseline MMR:** `{g['assigned_mmr']:.4f}`")
-                st.write(f"**Sims Run:** `{g['sims_run_count']}`")
-                st.write(f"**Status:** `{'ACTIVE' if g['is_active'] else 'DISABLED'}`")
+      filter_col = (
+          "home_city_id" if r_type == "City vs City" else "home_country_code"
+      )
+      target_val_a = (
+          id_a
+          if r_type == "City vs City"
+          else [o["country_code"] for o in opts if o["location_id"] == id_a][0]
+      )
+      target_val_b = (
+          id_b
+          if r_type == "City vs City"
+          else [o["country_code"] for o in opts if o["location_id"] == id_b][0]
+      )
 
-        st.markdown("---")
-        st.subheader("Run Standalone Monte Carlo Simulation")
+      ratings_a = [
+          float(r[0])
+          for r in conn.execute(
+              f"""
+                SELECT latent_mmr FROM players 
+                WHERE {filter_col} = ? AND calibration_tier != 'INACTIVE'
+            """,
+              (target_val_a,),
+          ).fetchall()
+      ]
 
-        sim_c1, sim_c2, sim_c3 = st.columns(3)
-        target_c_name = sim_c1.selectbox("Target City", [c["location_name"] for c in cities] if cities else [])
-        sim_depth = sim_c2.select_slider("Monte Carlo Iterations", options=[1000, 5000, 10000, 20000], value=10000)
+      ratings_b = [
+          float(r[0])
+          for r in conn.execute(
+              f"""
+                SELECT latent_mmr FROM players 
+                WHERE {filter_col} = ? AND calibration_tier != 'INACTIVE'
+            """,
+              (target_val_b,),
+          ).fetchall()
+      ]
 
-        if st.button("⚡ Run Full Monte Carlo Duels", type="primary"):
-            c_row = conn.execute("SELECT location_id FROM locations WHERE location_name = ?", (target_c_name,)).fetchone()
-            if c_row:
-                p_ratings = [
-                    float(r[0]) for r in conn.execute("""
-                        SELECT latent_mmr FROM players 
-                        WHERE home_city_id = ? AND rating_deviation <= 100.0 AND calibration_tier != 'INACTIVE'
-                    """, (c_row[0],)).fetchall()
-                ]
+      st.markdown("#### Baseline Parity Breakdown")
+      p1, p2 = st.columns(2)
 
-                if not p_ratings:
-                    st.error("No verified players available in this city to run shadow duels.")
-                else:
-                    ghost_list = [dict(g) for g in conn.execute("SELECT * FROM synthetic_ghosts WHERE is_active = 1").fetchall()]
-                    res = run_ghost_monte_carlo(p_ratings, ghost_list, n_sims=sim_depth)
+      with p1:
+        st.markdown(f"**{reg_a_name} Profile**")
+        st.write(f"• Active Players: `{len(ratings_a)}`")
+        st.write(
+            f"• Median MMR: `{float(pd.Series(ratings_a).median()):.4f}`"
+            if ratings_a
+            else "• Median MMR: `N/A`"
+        )
+        st.write(
+            f"• Rating Spread:"
+            f" `{min(ratings_a):.2f} – {max(ratings_a):.2f}`"
+            if ratings_a
+            else "• Rating Spread: `N/A`"
+        )
 
-                    st.markdown("### 📊 Simulation Output")
-                    r1, r2, r3 = st.columns(3)
-                    r1.metric("Ensemble Win Rate", f"{res['ensemble_win_rate']*100:.2f}%")
-                    r2.metric("Projected Raw Offset", f"{res['proposed_offset']:+.4f}")
-                    r3.metric("Total Duels Fired", f"{res['total_sims']:,}")
+      with p2:
+        st.markdown(f"**{reg_b_name} Profile**")
+        st.write(f"• Active Players: `{len(ratings_b)}`")
+        st.write(
+            f"• Median MMR: `{float(pd.Series(ratings_b).median()):.4f}`"
+            if ratings_b
+            else "• Median MMR: `N/A`"
+        )
+        st.write(
+            f"• Rating Spread:"
+            f" `{min(ratings_b):.2f} – {max(ratings_b):.2f}`"
+            if ratings_b
+            else "• Rating Spread: `N/A`"
+        )
 
-                    st.markdown("#### Archetype Breakdown")
-                    for name, wr in res["breakdown"].items():
-                        st.write(f"• **{name}:** `{wr*100:.2f}% win rate`")
+      # Direct Historical Bridge Head-to-Head Record
+      direct_matches = conn.execute(
+          """
+                SELECT COUNT(*), 
+                       SUM(CASE WHEN (p1.home_city_id = ? OR p2.home_city_id = ?) AND score_team_a > score_team_b THEN 1 ELSE 0 END)
+                FROM matches m
+                JOIN players p1 ON m.team_a_p1_id = p1.player_id
+                LEFT JOIN players p2 ON m.team_a_p2_id = p2.player_id
+                JOIN players p3 ON m.team_b_p1_id = p3.player_id
+                LEFT JOIN players p4 ON m.team_b_p2_id = p4.player_id
+                WHERE (p1.home_city_id = ? OR p2.home_city_id = ?) 
+                  AND (p3.home_city_id = ? OR p4.home_city_id = ?)
+            """,
+          (id_a, id_a, id_a, id_a, id_b, id_b),
+      ).fetchone()
 
-    # --------------------------------------------------------------------------
-    # SUB-TAB 3: GRAPH CENTRALITY & NETWORK RISKS
-    # --------------------------------------------------------------------------
-    with h_tab3:
-        st.subheader("Social Graph Centrality & Disconnection Telemetry")
-        st.caption("Detect isolated clusters, smurf rings, and players at risk of rating quarantine.")
+      h2h_total = direct_matches[0] or 0
+      h2h_a_wins = direct_matches[1] or 0
 
-        disconnected_players = conn.execute("""
+      st.markdown("#### Direct Head-to-Head Traveler Ledger")
+      if h2h_total == 0:
+        st.warning(
+            f"No recorded cross-location matches exist between {reg_a_name} and"
+            f" {reg_b_name}."
+        )
+      else:
+        st.info(
+            f"Empirical Record: {h2h_total} matches contested. {reg_a_name}"
+            f" wins: {h2h_a_wins} | {reg_b_name} wins: {h2h_total - h2h_a_wins}"
+        )
+
+      # 10,000 Iteration Monte Carlo Simulation
+      st.markdown("---")
+      st.markdown("#### Inter-Regional Monte Carlo Clash")
+      n_clash = st.select_slider(
+          "Simulation Sample Depth",
+          options=[1000, 5000, 10000, 20000],
+          value=10000,
+          key="clash_depth",
+      )
+
+      if st.button(
+          f"⚡ Run 2v2 Clash: {reg_a_name} vs {reg_b_name}", type="primary"
+      ):
+        if len(ratings_a) < 2 or len(ratings_b) < 2:
+          st.error(
+              "Both territories must have at least 2 active players to simulate"
+              " doubles matches."
+          )
+        else:
+          wins_a = 0
+          for _ in range(n_clash):
+            p_a = random.sample(ratings_a, 2)
+            p_b = random.sample(ratings_b, 2)
+
+            r_ta = ((p_a[0] ** 3 + p_a[1] ** 3) / 2.0) ** (1.0 / 3.0)
+            r_tb = ((p_b[0] ** 3 + p_b[1] ** 3) / 2.0) ** (1.0 / 3.0)
+
+            ea = 1.0 / (1.0 + 10.0 ** ((r_tb - r_ta) / 2.0))
+            if random.random() < ea:
+              wins_a += 1
+
+          win_rate_a = wins_a / float(n_clash)
+          win_rate_b = 1.0 - win_rate_a
+
+          st.markdown("### 📊 Clash Projection Results")
+          cr1, cr2, cr3 = st.columns(3)
+          cr1.metric(
+              f"{reg_a_name} Projected Win Share", f"{win_rate_a*100:.2f}%"
+          )
+          cr2.metric(
+              f"{reg_b_name} Projected Win Share", f"{win_rate_b*100:.2f}%"
+          )
+
+          implied_gap = 2.0 * math.log10(
+              max(0.001, win_rate_a) / max(0.001, win_rate_b)
+          )
+          cr3.metric(
+              "Implied Cluster Divergence",
+              f"{implied_gap:+.4f} MMR",
+              help="Estimated skill gap between the two pools.",
+          )
+
+          if abs(win_rate_a - 0.5000) > 0.1500:
+            st.warning(
+                f"⚠️ Significant regional imbalance detected. {reg_a_name if win_rate_a > 0.50 else reg_b_name} holds an un-normalized competitive advantage."
+            )
+          else:
+            st.success(
+                "✅ Both regions show close competitive alignment within"
+                " acceptable variance bounds."
+            )
+    else:
+      st.info(
+          "At least two registered locations are required to perform comparative"
+          " parity analysis."
+      )
+
+  # --------------------------------------------------------------------------
+  # SUB-TAB 3: SYNTHETIC GHOST SANDBOX
+  # --------------------------------------------------------------------------
+  with h_tab3:
+    st.subheader("Ensemble AI Ghost Benchmark Directory")
+    st.caption(
+        "Manage synthetic bot benchmarks and run on-demand Monte Carlo shadow"
+        " duels."
+    )
+
+    ghost_records = conn.execute("SELECT * FROM synthetic_ghosts").fetchall()
+    g_cols = st.columns(len(ghost_records) if ghost_records else 1)
+    for i, g in enumerate(ghost_records):
+      with g_cols[i]:
+        st.markdown(f"### 🤖 {g['ghost_name']}")
+        st.write(f"**Playstyle:** `{g['playstyle']}`")
+        st.write(f"**Baseline MMR:** `{g['assigned_mmr']:.4f}`")
+        st.write(f"**Sims Run:** `{g['sims_run_count']}`")
+        st.write(f"**Status:** `{'ACTIVE' if g['is_active'] else 'DISABLED'}`")
+
+    st.markdown("---")
+    st.subheader("Run Standalone Monte Carlo Duels")
+    all_cities = conn.execute(
+        "SELECT location_name FROM locations WHERE location_type = 'CITY' AND"
+        " is_active = 1"
+    ).fetchall()
+    sim_c1, sim_c2 = st.columns(2)
+    target_c_name = sim_c1.selectbox(
+        "Target City", [c[0] for c in all_cities] if all_cities else []
+    )
+    sim_depth = sim_c2.select_slider(
+        "Monte Carlo Iterations",
+        options=[1000, 5000, 10000, 20000],
+        value=10000,
+        key="standalone_ghost_depth",
+    )
+
+    if st.button("⚡ Run Full Monte Carlo Duels", type="primary"):
+      c_row = conn.execute(
+          "SELECT location_id FROM locations WHERE location_name = ?",
+          (target_c_name,),
+      ).fetchone()
+      if c_row:
+        p_ratings = [
+            float(r[0])
+            for r in conn.execute(
+                """
+                    SELECT latent_mmr FROM players 
+                    WHERE home_city_id = ? AND rating_deviation <= 100.0 AND calibration_tier != 'INACTIVE'
+                """,
+                (c_row[0],),
+            ).fetchall()
+        ]
+
+        if not p_ratings:
+          st.error("No verified players in city to simulate against ghosts.")
+        else:
+          ghost_list = [
+              dict(g)
+              for g in conn.execute(
+                  "SELECT * FROM synthetic_ghosts WHERE is_active = 1"
+              ).fetchall()
+          ]
+          res = run_ghost_monte_carlo(p_ratings, ghost_list, n_sims=sim_depth)
+
+          st.markdown("### 📊 Simulation Output")
+          r1, r2, r3 = st.columns(3)
+          r1.metric("Ensemble Win Rate", f"{res['ensemble_win_rate']*100:.2f}%")
+          r2.metric("Projected Raw Offset", f"{res['proposed_offset']:+.4f}")
+          r3.metric("Total Duels Fired", f"{res['total_sims']:,}")
+
+          st.markdown("#### Archetype Breakdown")
+          for name, wr in res["breakdown"].items():
+            st.write(f"• **{name}:** `{wr*100:.2f}% win rate`")
+
+  # --------------------------------------------------------------------------
+  # SUB-TAB 4: GRAPH CENTRALITY & NETWORK RISKS
+  # --------------------------------------------------------------------------
+  with h_tab4:
+    st.subheader("Social Graph Centrality & Disconnection Telemetry")
+    st.caption(
+        "Detect isolated clusters, disconnected hubs, and players at risk of"
+        " rating quarantine."
+    )
+
+    disconnected_players = conn.execute("""
             SELECT p.player_id, p.display_name, l.location_name as city, p.latent_mmr, p.rating_deviation,
-                   COUNT(ml.log_id) as total_games,
-                   COUNT(DISTINCT ml.match_id) as unique_matches
+                   COUNT(ml.log_id) as total_games
             FROM players p
             JOIN locations l ON p.home_city_id = l.location_id
             LEFT JOIN match_logs ml ON p.player_id = ml.player_id
@@ -2599,48 +3031,61 @@ elif nav == "🌐 Hawking Engine":
             HAVING total_games < 3
         """).fetchall()
 
-        if disconnected_players:
-            st.warning(f"⚠️ Found {len(disconnected_players)} players with low network connectivity (fewer than 3 recorded games):")
-            disc_data = [{
-                "Player": p["display_name"],
-                "City": p["city"],
-                "MMR": f"{p['latent_mmr']:.4f}",
-                "RD": f"{p['rating_deviation']:.1f}",
-                "Games": p["total_games"]
-            } for p in disconnected_players]
-            st.dataframe(pd.DataFrame(disc_data), use_container_width=True)
-        else:
-            st.success("✅ All active players meet minimum graph connectivity.")
+    if disconnected_players:
+      st.warning(
+          f"⚠️ Found {len(disconnected_players)} players with low network"
+          " connectivity (fewer than 3 recorded games):"
+      )
+      disc_data = [{
+          "Player": p["display_name"],
+          "City": p["city"],
+          "MMR": f"{p['latent_mmr']:.4f}",
+          "RD": f"{p['rating_deviation']:.1f}",
+          "Games": p["total_games"],
+      } for p in disconnected_players]
+      st.dataframe(pd.DataFrame(disc_data), use_container_width=True)
+    else:
+      st.success("✅ All active players meet minimum graph connectivity.")
 
-    # --------------------------------------------------------------------------
-    # SUB-TAB 4: HAWKING GOVERNANCE & PARAMETERS
-    # --------------------------------------------------------------------------
-    with h_tab4:
-        st.subheader("Hawking Parameter Controls & Circuit Breakers")
-        cfg_rows = conn.execute("""
+  # --------------------------------------------------------------------------
+  # SUB-TAB 5: HAWKING GOVERNANCE & CIRCUIT BREAKERS
+  # --------------------------------------------------------------------------
+  with h_tab5:
+    st.subheader("Hawking Governance, Drift Thresholds & Circuit Breakers")
+    st.caption(
+        "Global parameters governing macro normalization and safety bounds."
+    )
+
+    cfg_rows = conn.execute("""
             SELECT * FROM global_config 
             WHERE param_key LIKE '%HAWKING%' OR param_key LIKE '%BRIDGE%' OR param_key LIKE '%TIKHONOV%' OR param_key LIKE '%DRIFT%' OR param_key LIKE '%INACTIVITY%'
         """).fetchall()
 
-        if not cfg_rows:
-            st.info("No specific Hawking parameters registered. Using algorithmic defaults.")
-        else:
-            for c in cfg_rows:
-                with st.expander(f"⚙️ {c['param_key']}"):
-                    st.write(f"**Description:** {c['description']}")
-                    st.info(f"💡 {c['tuning_guide']}")
-                    val = st.number_input(
-                        "Parameter Value",
-                        value=float(c["param_value"]),
-                        key=f"hwk_cfg_{c['param_key']}"
-                    )
-                    if st.button("Save", key=f"save_hwk_{c['param_key']}"):
-                        conn.execute("UPDATE global_config SET param_value = ? WHERE param_key = ?", (val, c["param_key"]))
-                        conn.commit()
-                        st.success(f"Updated {c['param_key']} -> {val}")
-                        st.rerun()
+    if not cfg_rows:
+      st.info(
+          "No specific Hawking parameters registered. Using algorithmic"
+          " defaults."
+      )
+    else:
+      for c in cfg_rows:
+        with st.expander(f"⚙️ {c['param_key']}"):
+          st.write(f"**Description:** {c['description']}")
+          st.info(f"💡 {c['tuning_guide']}")
+          val = st.number_input(
+              "Parameter Value",
+              value=float(c["param_value"]),
+              key=f"hwk_cfg_{c['param_key']}",
+          )
+          if st.button("Save Parameter", key=f"save_hwk_{c['param_key']}"):
+            conn.execute(
+                "UPDATE global_config SET param_value = ? WHERE param_key = ?",
+                (val, c["param_key"]),
+            )
+            conn.commit()
+            st.success(f"Updated {c['param_key']} -> {val}")
+            st.rerun()
 
-    conn.close()
+  conn.close()
 
 # ==============================================================================
 # ⚙️ TAB: GLOBAL CONFIGURATION

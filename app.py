@@ -90,9 +90,40 @@ def init_db():
         cats = [("Beginner", 0.0, 0.999, 1, 1.0), ("Beginner+", 1.0, 1.999, 2, 1.0), ("Intermediate", 2.0, 3.499, 3, 1.0), ("Intermediate+", 3.5, 4.499, 4, 1.0), ("Advanced", 4.5, 5.499, 5, 1.0), ("Pro", 5.5, 6.299, 6, 1.0), ("Elite", 6.3, 7.0, 7, 1.0)]
         for cn, cmn, cmx, so, sm in cats: c.execute("INSERT OR IGNORE INTO rating_categories VALUES (?,?,?,?,?)", (cn, cmn, cmx, so, sm))
 
-    fmt = [("STD_B03", "Best of 3 Sets", "MULTI_SET", 1.00, None, None, 0, 1), ("RACE_6", "Race to 6 Games", "RACE_GAMES", 0.70, 6, None, 0, 1), ("AMER_24", "Americano 24 Points", "AMERICANO", 0.30, None, 24, 1, 1), ("MEX_24", "Mexicano 24 Points", "MEXICANO", 0.30, None, 24, 1, 1)]
-    for fi, fn, cat, mc, tg, tp, isb, ia in fmt: c.execute("INSERT OR IGNORE INTO match_formats VALUES (?,?,?,?,?,?,?,?)", (fi, fn, cat, mc, tg, tp, isb, ia))
+    # All 18 Official V.16 Match Formats (Complete Registry)
+    official_formats = [
+        ("STD_B03", "Best of 3 Sets", "MULTI_SET", 1.00, None, None, 0, 1),
+        ("STD_B05", "Best of 5 Sets", "MULTI_SET", 1.00, None, None, 0, 1),
+        ("RACE_4", "Race to 4 Games", "RACE_GAMES", 0.50, 4, None, 0, 1),
+        ("RACE_5", "Race to 5 Games", "RACE_GAMES", 0.60, 5, None, 0, 1),
+        ("RACE_6", "Race to 6 Games", "RACE_GAMES", 0.70, 6, None, 0, 1),
+        ("RACE_7", "Race to 7 Games", "RACE_GAMES", 0.80, 7, None, 0, 1),
+        ("RACE_9", "Race to 9 Games", "RACE_GAMES", 0.80, 9, None, 0, 1),
+        ("RACE_11", "Race to 11 Games", "RACE_GAMES", 0.90, 11, None, 0, 1),
+        ("AMER_12", "Americano 12 Points", "AMERICANO", 0.30, None, 12, 0, 1),
+        ("MEX_12", "Mexicano 12 Points", "MEXICANO", 0.30, None, 12, 0, 1),
+        ("AMER_16", "Americano 16 Points", "AMERICANO", 0.30, None, 16, 0, 1),
+        ("MEX_16", "Mexicano 16 Points", "MEXICANO", 0.30, None, 16, 0, 1),
+        ("AMER_20", "Americano 20 Points", "AMERICANO", 0.30, None, 20, 0, 1),
+        ("MEX_20", "Mexicano 20 Points", "MEXICANO", 0.30, None, 20, 0, 1),
+        ("AMER_24", "Americano 24 Points", "AMERICANO", 0.30, None, 24, 0, 1),
+        ("MEX_24", "Mexicano 24 Points", "MEXICANO", 0.30, None, 24, 0, 1),
+        ("AMER_28", "Americano 28 Points", "AMERICANO", 0.30, None, 28, 0, 1),
+        ("MEX_28", "Mexicano 28 Points", "MEXICANO", 0.30, None, 28, 0, 1)
+    ]
+    for fid, fname, cat, mc, tg, tp, is_sb, is_a in official_formats:
+        c.execute("""INSERT INTO match_formats (format_id, format_name, category, mc_weight, target_games, total_points, is_session_bound, is_active)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     ON CONFLICT(format_id) DO UPDATE SET 
+                         format_name=excluded.format_name, category=excluded.category, target_games=excluded.target_games,
+                         total_points=excluded.total_points, is_session_bound=excluded.is_session_bound, is_active=excluded.is_active""",
+                  (fid, fname, cat, mc, tg, tp, is_sb, is_a))
 
+    seed_factory_parameters(c, overwrite_existing=False)
+    conn.commit()
+    conn.close()
+
+def seed_factory_parameters(cursor, overwrite_existing=False):
     master_params = [
         ("R_MIN", 0.000, 1, "Scale Absolute Floor", "Lowest possible rating.", "Clamps rating drops at 0.000.", "1. Core Bounds & Drag"),
         ("R_MAX", 7.000, 1, "Scale Absolute Ceiling", "Maximum rating ceiling.", "LOCKED at 7.000.", "1. Core Bounds & Drag"),
@@ -114,6 +145,8 @@ def init_db():
         ("ICE_OUT_MULT_TIER_2", 0.05, 1, "Ice-Out Dampener 2", "Multiplier applied if Tier 2 Gap breached.", "0.05 = 95% loss reduction.", "4. Partner Guardrails"),
         ("ANTI_CARRY_GAP_TIER_1", 1.75, 1, "Anti-Carry Gap Threshold 1", "Min gap to trigger 50% carry dampening.", "Applies to weaker partner.", "4. Partner Guardrails"),
         ("ANTI_CARRY_MULT_TIER_1", 0.50, 1, "Anti-Carry Dampener 1", "Multiplier applied if Tier 1 carry breached.", "0.50 = 50% gain reduction.", "4. Partner Guardrails"),
+        ("ANTI_CARRY_GAP_TIER_2", 2.50, 1, "Anti-Carry Gap Threshold 2", "Min gap to trigger 25% carry dampening.", "Extreme tow jobs.", "4. Partner Guardrails"),
+        ("ANTI_CARRY_MULT_TIER_2", 0.25, 1, "Anti-Carry Dampener 2", "Multiplier applied if Tier 2 carry breached.", "0.25 = 75% gain reduction.", "4. Partner Guardrails"),
         ("MAX_24H_EXCHANGE_CAP", 0.150, 1, "24H Casual Cap", "Net transfer ceiling.", "Prevents farming.", "5. Exchange Caps & Security"),
         ("PROVISIONAL_CAP_MULTIPLIER", 2.5, 1, "Provisional Cap Relaxer", "Multiplier on 24H cap for PRs.", "Allows 0.375 point movement.", "5. Exchange Caps & Security"),
         ("SESSION_EXCHANGE_CAP", 0.300, 1, "Verified Session Cap", "Cap for verified club events.", "Doubles point limits for mixers.", "5. Exchange Caps & Security"),
@@ -144,8 +177,7 @@ def init_db():
         ("CIRCUIT_BREAKER", 0.0250, 1, "Auto Cron Safety Ceiling", "Max shift per weekly cycle.", "Limits automated macro shifts.", "8. Hawking Macro")
     ]
     for k, v, act, tit, desc, tune, grp in master_params:
-        c.execute("INSERT INTO global_config VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(param_key) DO UPDATE SET title=excluded.title, description=excluded.description, tuning_guide=excluded.tuning_guide, module_group=excluded.module_group", (k, v, act, tit, desc, tune, grp))
-    conn.commit(); conn.close()
+        cursor.execute("INSERT INTO global_config VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(param_key) DO UPDATE SET title=excluded.title, description=excluded.description, tuning_guide=excluded.tuning_guide, module_group=excluded.module_group", (k, v, act, tit, desc, tune, grp))
 
 init_db()
 
@@ -279,7 +311,7 @@ class RyftV16:
                 raw_d = max(-max_d, min(max_d, raw_d))
                 flags.append("RIGHTSIZING_INTERPOLATION")
             else:
-                # FIX 2: Verified Anchors locked to K_MIN (0.080) to buffer rating loss against unrated smurfs
+                # Anchor Loss Cushioning: Anchors locked to K_MIN (0.080) to buffer loss vs unrated smurfs
                 if is_anchor_player:
                     k_base = cfg.get("K_MIN", 0.080)
                 else:
@@ -325,7 +357,7 @@ class RyftV16:
             base_cap = cfg.get("SESSION_EXCHANGE_CAP", 0.300) if session_id and session_checked_in >= cfg.get("MIN_SESSION_PLAYERS", 6) else cfg.get("MAX_24H_EXCHANGE_CAP", 0.150)
             cap = base_cap * (cfg.get("PROVISIONAL_CAP_MULTIPLIER", 2.5) if prov else 1.0)
             
-            # FIX 1: Strict Elevator Blowout Activation for Cap Bypass
+            # Gated Elevator Blowout Trigger for Placement Cap Bypass
             opp_team_r = tb_r if is_a else ta_r
             is_elevator_active = (
                 prov and won and (raw_d > cap) and
@@ -578,7 +610,8 @@ elif nav == "🎾 Log Matches":
     conn = get_db_connection()
     venues = conn.execute("SELECT * FROM venues WHERE is_active = 1").fetchall()
     players = conn.execute("SELECT * FROM players WHERE calibration_tier != 'INACTIVE' ORDER BY display_name").fetchall()
-    formats = conn.execute("SELECT * FROM match_formats WHERE is_active = 1 AND is_session_bound = 0").fetchall()
+    # Query all active match formats across all categories
+    formats = conn.execute("SELECT * FROM match_formats WHERE is_active = 1 ORDER BY category, mc_weight DESC, target_games, total_points").fetchall()
     conn.close()
 
     v_dict = {v["venue_name"]: dict(v) for v in venues}
@@ -617,29 +650,59 @@ elif nav == "🎾 Log Matches":
     if sel_f:
         cat = sel_f["category"]
         if cat == "MULTI_SET":
+            is_b05 = (sel_f["format_id"] == "STD_B05")
+            target_sets = 3 if is_b05 else 2
+            
             s1_c1, s1_c2 = st.columns(2)
             s1a = s1_c1.number_input("Set 1: Team A", 0, 7, 6, key="s1a"); s1b = s1_c2.number_input("Set 1: Team B", 0, 7, 3, key="s1b")
             sets_data.append((s1a, s1b))
             s2_c1, s2_c2 = st.columns(2)
             s2a = s2_c1.number_input("Set 2: Team A", 0, 7, 6, key="s2a"); s2b = s2_c2.number_input("Set 2: Team B", 0, 7, 4, key="s2b")
             sets_data.append((s2a, s2b))
-            if sum(1 for s in sets_data if s[0]>s[1]) == 1 and sum(1 for s in sets_data if s[1]>s[0]) == 1:
-                st.warning("Set 3 decider:")
+            
+            w_a = sum(1 for s in sets_data if s[0] > s[1])
+            w_b = sum(1 for s in sets_data if s[1] > s[0])
+            
+            if max(w_a, w_b) < target_sets:
                 s3_c1, s3_c2 = st.columns(2)
-                s3a = s3_c1.number_input("Set 3: Team A", 0, 7, 6, key="s3a"); s3b = s3_c2.number_input("Set 3: Team B", 0, 7, 4, key="s3b")
+                s3a = s3_c1.number_input("Set 3: Team A", 0, 7, 6 if w_b > w_a else 3, key="s3a")
+                s3b = s3_c2.number_input("Set 3: Team B", 0, 7, 3 if w_b > w_a else 6, key="s3b")
                 sets_data.append((s3a, s3b))
-            sa, sb = sum(1 for s in sets_data if s[0]>s[1]), sum(1 for s in sets_data if s[1]>s[0])
+                w_a = sum(1 for s in sets_data if s[0] > s[1])
+                w_b = sum(1 for s in sets_data if s[1] > s[0])
+
+            if is_b05 and max(w_a, w_b) < target_sets:
+                s4_c1, s4_c2 = st.columns(2)
+                s4a = s4_c1.number_input("Set 4: Team A", 0, 7, 6 if w_b > w_a else 4, key="s4a")
+                s4b = s4_c2.number_input("Set 4: Team B", 0, 7, 4 if w_b > w_a else 6, key="s4b")
+                sets_data.append((s4a, s4b))
+                w_a = sum(1 for s in sets_data if s[0] > s[1])
+                w_b = sum(1 for s in sets_data if s[1] > s[0])
+
+            if is_b05 and max(w_a, w_b) < target_sets:
+                s5_c1, s5_c2 = st.columns(2)
+                s5a = s5_c1.number_input("Set 5: Team A", 0, 7, 6 if w_b > w_a else 4, key="s5a")
+                s5b = s5_c2.number_input("Set 5: Team B", 0, 7, 4 if w_b > w_a else 6, key="s5b")
+                sets_data.append((s5a, s5b))
+                w_a = sum(1 for s in sets_data if s[0] > s[1])
+                w_b = sum(1 for s in sets_data if s[1] > s[0])
+
+            sa, sb = w_a, w_b
             gw, gl = sum(x[0] for x in sets_data), sum(x[1] for x in sets_data)
+
         elif cat == "RACE_GAMES":
             rg1, rg2 = st.columns(2)
-            gw = rg1.number_input("Team A Games", 0, 30, sel_f["target_games"] or 6)
-            gl = rg2.number_input("Team B Games", 0, 30, max(0, (sel_f["target_games"] or 6)-2))
-            sa, sb = (1 if gw>gl else 0), (1 if gl>gw else 0)
+            tg = sel_f["target_games"] or 6
+            gw = rg1.number_input("Team A Games", 0, 30, tg)
+            gl = rg2.number_input("Team B Games", 0, 30, max(0, tg - 2))
+            sa, sb = (1 if gw > gl else 0), (1 if gl > gw else 0)
             sets_data.append((gw, gl))
+
         elif cat in ("AMERICANO", "MEXICANO"):
             tp = sel_f["total_points"] or 24
             ap1, ap2 = st.columns(2)
-            sa = ap1.number_input("Team A Points", 0, tp, tp//2); sb = ap2.number_input("Team B Points", 0, tp, tp - (tp//2))
+            sa = ap1.number_input("Team A Points", 0, tp, tp // 2)
+            sb = ap2.number_input("Team B Points", 0, tp, tp - (tp // 2))
             gw, gl = sa, sb
             sets_data.append((sa, sb))
 
@@ -748,9 +811,9 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
         s_team = cs7.selectbox("Team Mechanics", ["FIXED_TEAMS", "ROTATING_TEAMS"] if s_mode == "DOUBLES" else ["SINGLES"])
         is_tourney_sess = cs8.checkbox("🏆 Official Tournament Session", value=False)
         
-        if s_team == "ROTATING_TEAMS": compat_formats = conn.execute("SELECT format_id, format_name, category FROM match_formats WHERE category IN ('AMERICANO', 'MEXICANO', 'RACE_GAMES') AND is_active = 1").fetchall()
-        elif s_team == "FIXED_TEAMS": compat_formats = conn.execute("SELECT format_id, format_name, category FROM match_formats WHERE category IN ('MULTI_SET', 'RACE_GAMES') AND is_active = 1").fetchall()
-        else: compat_formats = conn.execute("SELECT format_id, format_name, category FROM match_formats WHERE category IN ('RACE_GAMES', 'MULTI_SET') AND is_active = 1").fetchall()
+        if s_team == "ROTATING_TEAMS": compat_formats = conn.execute("SELECT format_id, format_name, category FROM match_formats WHERE category IN ('AMERICANO', 'MEXICANO', 'RACE_GAMES') AND is_active = 1 ORDER BY category, format_name").fetchall()
+        elif s_team == "FIXED_TEAMS": compat_formats = conn.execute("SELECT format_id, format_name, category FROM match_formats WHERE category IN ('MULTI_SET', 'RACE_GAMES') AND is_active = 1 ORDER BY category, format_name").fetchall()
+        else: compat_formats = conn.execute("SELECT format_id, format_name, category FROM match_formats WHERE category IN ('RACE_GAMES', 'MULTI_SET') AND is_active = 1 ORDER BY category, format_name").fetchall()
         
         f_compat_dict = {f["format_name"]: dict(f) for f in compat_formats}
         s_fmt_name = st.selectbox("Scoring Ruleset", list(f_compat_dict.keys()) if f_compat_dict else ["None Compatible"])
@@ -1015,7 +1078,8 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
                                     c_ea, c_eb = st.columns(2)
                                     val_a = sets_json[0][0] if sets_json else m['score_team_a']
                                     val_b = sets_json[0][1] if sets_json else m['score_team_b']
-                                    new_a = c_ea.number_input(f"Points {ta_players}", 0, 100, val_a, key=f"ed_a_{m['session_match_id']}"); new_b = c_eb.number_input(f"Points {tb_players}", 0, 100, val_b, key=f"ed_b_{m['session_match_id']}")
+                                    new_a = c_ea.number_input(f"Points {ta_players}", 0, 100, val_a, key=f"ed_a_{m['session_match_id']}")
+                                    new_b = c_eb.number_input(f"Points {tb_players}", 0, 100, val_b, key=f"ed_b_{m['session_match_id']}")
                                     if st.form_submit_button("Update Points"):
                                         if (new_a + new_b) != fmt_info["total_points"]: st.error(f"Score must total {fmt_info['total_points']} points.")
                                         else:
@@ -1238,7 +1302,7 @@ elif nav == "🏆 Tournament Desk (Delayed)":
     v_dict = {v["venue_name"]: dict(v) for v in venues}
     cats = conn.execute("SELECT category_name, min_rating, max_rating FROM rating_categories ORDER BY sort_order ASC").fetchall()
     cat_opts = [c["category_name"] for c in cats]
-    formats = conn.execute("SELECT * FROM match_formats WHERE is_active = 1").fetchall()
+    formats = conn.execute("SELECT * FROM match_formats WHERE is_active = 1 ORDER BY category, mc_weight DESC, target_games, total_points").fetchall()
     f_dict = {f["format_name"]: dict(f) for f in formats}
     players = conn.execute("SELECT * FROM players WHERE calibration_tier != 'INACTIVE' ORDER BY display_name").fetchall()
     p_meta = {p["player_id"]: dict(p) for p in players}
@@ -1708,7 +1772,7 @@ elif nav == "⚙️ Global Config":
 
         st.markdown("---")
         st.markdown("### 🎾 Official Match Formats & Confidence Multipliers ($M_C$)")
-        all_formats = conn.execute("SELECT format_id, format_name, category, mc_weight FROM match_formats ORDER BY category, mc_weight DESC").fetchall()
+        all_formats = conn.execute("SELECT format_id, format_name, category, mc_weight FROM match_formats ORDER BY category, mc_weight DESC, format_id").fetchall()
         with st.expander("🛠️ Edit Format Weights ($M_C$ Multipliers)", expanded=False):
             with st.form("edit_mc_weights_form"):
                 updated_mc = {}
@@ -1716,7 +1780,7 @@ elif nav == "⚙️ Global Config":
                     fc1, fc2, fc3 = st.columns([3, 2, 2])
                     fc1.write(f"**{fmt['format_name']}** (`{fmt['format_id']}`)")
                     fc2.caption(f"Category: {fmt['category']}")
-                    updated_mc[fmt["format_id"]] = new_mc = fc3.number_input("Weight", 0.10, 1.50, float(fmt["mc_weight"]), 0.05, key=f"mc_{fmt['format_id']}")
+                    updated_mc[fmt["format_id"]] = fc3.number_input("Weight", 0.10, 1.50, float(fmt["mc_weight"]), 0.05, key=f"mc_{fmt['format_id']}")
                 if st.form_submit_button("Save Format Confidence Weights ($M_C$)"):
                     for fid, weight in updated_mc.items(): conn.execute("UPDATE match_formats SET mc_weight = ? WHERE format_id = ?", (weight, fid))
                     conn.commit(); st.success("Format weights committed!"); st.rerun()

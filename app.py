@@ -147,10 +147,12 @@ def seed_factory_parameters(cursor, overwrite_existing=False):
         ("ANTI_CARRY_MULT_TIER_1", 0.50, 1, "Anti-Carry Dampener 1", "Multiplier applied if Tier 1 carry breached.", "0.50 = 50% gain reduction.", "4. Partner Guardrails"),
         ("ANTI_CARRY_GAP_TIER_2", 2.50, 1, "Anti-Carry Gap Threshold 2", "Min gap to trigger 25% carry dampening.", "Extreme tow jobs.", "4. Partner Guardrails"),
         ("ANTI_CARRY_MULT_TIER_2", 0.25, 1, "Anti-Carry Dampener 2", "Multiplier applied if Tier 2 carry breached.", "0.25 = 75% gain reduction.", "4. Partner Guardrails"),
-        ("MAX_24H_EXCHANGE_CAP", 0.150, 1, "24H Casual Cap", "Net transfer ceiling.", "Prevents farming.", "5. Exchange Caps & Security"),
-        ("PROVISIONAL_CAP_MULTIPLIER", 2.5, 1, "Provisional Cap Relaxer", "Multiplier on 24H cap for PRs.", "Allows 0.375 point movement.", "5. Exchange Caps & Security"),
+        ("MAX_24H_PAIRWISE_EXCHANGE_CAP", 0.150, 1, "24H Pairwise Cap", "Max net transfer between specific opponent cluster in 24h.", "Targeted anti-collusion.", "5. Exchange Caps & Security"),
+        ("MAX_24H_GLOBAL_CASUAL_CAP", 0.250, 1, "24H Global Casual Cap", "Max net casual points across all opponents in 24h.", "Daily movement governor.", "5. Exchange Caps & Security"),
+        ("MAX_24H_EXCHANGE_CAP", 0.150, 1, "24H Casual Cap (Legacy)", "Fallback single-window cap ceiling.", "Legacy parameter.", "5. Exchange Caps & Security"),
+        ("PROVISIONAL_CAP_MULTIPLIER", 2.5, 1, "Provisional Cap Relaxer", "Multiplier on 24H cap for PRs.", "Allows accelerated placement.", "5. Exchange Caps & Security"),
         ("SESSION_EXCHANGE_CAP", 0.300, 1, "Verified Session Cap", "Cap for verified club events.", "Doubles point limits for mixers.", "5. Exchange Caps & Security"),
-        ("MIN_SESSION_PLAYERS", 6, 1, "Session Participant Floor", "Min players required to unlock session cap.", "Events with fewer revert to 0.150.", "5. Exchange Caps & Security"),
+        ("MIN_SESSION_PLAYERS", 6, 1, "Session Participant Floor", "Min players required to unlock session cap.", "Events with fewer revert to casual caps.", "5. Exchange Caps & Security"),
         ("TOURNAMENT_MULTIPLIER_ACTIVE", 1, 1, "Tournament Multiplier Toggle", "Activates stakes multiplier for tournament.", "1 = Active.", "5. Exchange Caps & Security"),
         ("TOURNAMENT_STAKES_MULTIPLIER", 1.15, 1, "Tournament Stakes Multiplier", "Rating delta multiplier for tournaments.", "Default 1.15 (+15%).", "5. Exchange Caps & Security"),
         ("RD_MIN", 30.0, 1, "Certainty Floor", "Absolute uncertainty floor.", "Prevents RD dropping below 30.0.", "6. Uncertainty & Rust"),
@@ -245,8 +247,46 @@ class RyftV16:
         if owns: conn.commit(); conn.close()
 
     @staticmethod
-    def get_rolling_24h_exchange(player_id, current_ts_str, conn):
-        """Calculates net rating gained or lost across casual matches in the trailing 24 hours."""
+    def get_rolling_24h_pairwise_delta(player_id, opponent_ids, current_ts_str, conn):
+        """Calculates net rating points exchanged strictly against this specific opponent cluster in casual play (24h).
+           Safeguarded against partner inversion: only evaluates matches where the opponent was on the opposing team."""
+        if not current_ts_str or not conn or not opponent_ids:
+            return 0.0
+        try:
+            curr_dt = datetime.fromisoformat(current_ts_str.replace("Z", "+00:00"))
+        except Exception:
+            curr_dt = datetime.now(timezone.utc)
+            
+        opp_placeholders = ",".join("?" for _ in opponent_ids)
+        query = f"""
+            SELECT ml.delta_r, m.match_timestamp
+            FROM match_logs ml
+            JOIN matches m ON ml.match_id = m.match_id
+            WHERE ml.player_id = ?
+              AND m.is_tournament = 0
+              AND (
+                  ((m.team_a_p1_id = ? OR m.team_a_p2_id = ?) AND (m.team_b_p1_id IN ({opp_placeholders}) OR m.team_b_p2_id IN ({opp_placeholders})))
+                  OR
+                  ((m.team_b_p1_id = ? OR m.team_b_p2_id = ?) AND (m.team_a_p1_id IN ({opp_placeholders}) OR m.team_a_p2_id IN ({opp_placeholders})))
+              )
+        """
+        params = [player_id, player_id, player_id] + list(opponent_ids) + list(opponent_ids) + [player_id, player_id] + list(opponent_ids) + list(opponent_ids)
+        rows = conn.execute(query, params).fetchall()
+        
+        rolling_delta = 0.0
+        for r in rows:
+            try:
+                m_dt = datetime.fromisoformat(r["match_timestamp"].replace("Z", "+00:00"))
+                diff_sec = (curr_dt - m_dt).total_seconds()
+                if 0 <= diff_sec <= 86400.0:
+                    rolling_delta += float(r["delta_r"])
+            except Exception:
+                continue
+        return rolling_delta
+
+    @staticmethod
+    def get_rolling_24h_global_delta(player_id, current_ts_str, conn):
+        """Calculates total net casual rating gained/lost across all opponents in the trailing 24 hours."""
         if not current_ts_str or not conn:
             return 0.0
         try:
@@ -427,21 +467,26 @@ class RyftV16:
             if w_g < 1.0 and not is_quar:
                 raw_d *= w_g; flags.append(f"[ALERT_DISCONNECTED_GRAPH_DAMPENING] ({w_g:.2f}x)")
 
-            # Stateful Rolling 24H Cumulative Exchange Cap (Bit 13)
-            base_cap = cfg.get("SESSION_EXCHANGE_CAP", 0.300) if session_id and session_checked_in >= cfg.get("MIN_SESSION_PLAYERS", 6) else cfg.get("MAX_24H_EXCHANGE_CAP", 0.150)
-            cap_limit = base_cap * (cfg.get("PROVISIONAL_CAP_MULTIPLIER", 2.5) if prov else 1.0)
-            
+            # Opponent IDs for targeted pairwise exchange tracking
+            opp_ids = [p3["player_id"], p4["player_id"]] if is_a else [p1["player_id"], p2["player_id"]]
+            opp_ids = [oid for oid in opp_ids if oid is not None]
+
+            # Scale caps if player is provisional
+            mult = cfg.get("PROVISIONAL_CAP_MULTIPLIER", 2.5) if prov else 1.0
+            pairwise_cap = cfg.get("MAX_24H_PAIRWISE_EXCHANGE_CAP", cfg.get("MAX_24H_EXCHANGE_CAP", 0.1500)) * mult
+            global_cap = cfg.get("MAX_24H_GLOBAL_CASUAL_CAP", 0.2500) * mult
+
+            # Query historical 24h deltas
+            prior_pairwise = cls.get_rolling_24h_pairwise_delta(p["player_id"], opp_ids, effective_match_ts, conn)
+            prior_global = cls.get_rolling_24h_global_delta(p["player_id"], effective_match_ts, conn)
+            cum_session_delta = cumulative_deltas.get(p["player_id"], 0.0) if cumulative_deltas is not None else 0.0
+
             # Gated Elevator Blowout Trigger for Placement Cap Bypass
             is_elevator_active = (
-                prov and won and (raw_d > cap_limit) and
+                prov and won and (raw_d > pairwise_cap) and
                 (s_margin >= 1.00 or (g_w_raw >= 2 * g_l_raw and g_w_raw >= 4)) and
                 (opp_team_r >= r - 0.50)
             )
-
-            # Query historical 24h delta if outside a session, or blend with in-session cumulative deltas
-            prior_24h_exchange = cls.get_rolling_24h_exchange(p["player_id"], effective_match_ts, conn)
-            cum_session_delta = cumulative_deltas.get(p["player_id"], 0.0) if cumulative_deltas is not None else 0.0
-            total_prior_delta = prior_24h_exchange + cum_session_delta
 
             if is_elevator_active and bool(cfg.get("PROVISIONAL_BYPASS_EXCHANGE_CAP", 1)):
                 max_allowed = cfg.get("MAX_PROVISIONAL_DELTA", 0.750)
@@ -452,23 +497,42 @@ class RyftV16:
             elif is_tournament and bool(cfg.get("TOURNAMENT_MULTIPLIER_ACTIVE", 1)):
                 t_mult = cfg.get("TOURNAMENT_STAKES_MULTIPLIER", 1.15)
                 final_d = raw_d * t_mult; flags.append(f"TOURNAMENT ({t_mult}x, Uncapped)")
+            elif session_id and session_checked_in >= cfg.get("MIN_SESSION_PLAYERS", 6):
+                # Managed Session Cap
+                sess_cap = cfg.get("SESSION_EXCHANGE_CAP", 0.300) * mult
+                target_cum = cum_session_delta + raw_d
+                capped_target = max(-sess_cap, min(sess_cap, target_cum))
+                final_d = capped_target - cum_session_delta
+                if abs(target_cum) > sess_cap:
+                    flags.append("SESSION_CUMULATIVE_CAP_ENFORCED")
             else:
+                # Standalone Casual Dual-Cap Clamping (Pairwise vs. Global Governor)
                 if raw_d >= 0.0:
-                    prior_gains = max(0.0, total_prior_delta)
-                    remaining_headroom = max(0.0, cap_limit - prior_gains)
-                    if raw_d > remaining_headroom:
-                        final_d = remaining_headroom
+                    headroom_pairwise = max(0.0, pairwise_cap - max(0.0, prior_pairwise + cum_session_delta))
+                    headroom_global = max(0.0, global_cap - max(0.0, prior_global + cum_session_delta))
+                    active_headroom = min(headroom_pairwise, headroom_global)
+                    
+                    if raw_d > active_headroom:
+                        final_d = active_headroom
                         flags.append("CAP_ENFORCED")
-                        flags.append("[ALERT_24H_EXCHANGE_CAP_CLAMPED]")
+                        if active_headroom == headroom_pairwise:
+                            flags.append("[ALERT_PAIRWISE_CAP_CLAMPED]")
+                        else:
+                            flags.append("[ALERT_GLOBAL_CASUAL_CAP_CLAMPED]")
                     else:
                         final_d = raw_d
                 else:
-                    prior_losses = min(0.0, total_prior_delta)
-                    remaining_loss_room = min(0.0, -cap_limit - prior_losses)
-                    if raw_d < remaining_loss_room:
-                        final_d = remaining_loss_room
+                    lossroom_pairwise = min(0.0, -pairwise_cap - min(0.0, prior_pairwise + cum_session_delta))
+                    lossroom_global = min(0.0, -global_cap - min(0.0, prior_global + cum_session_delta))
+                    active_lossroom = max(lossroom_pairwise, lossroom_global)
+                    
+                    if raw_d < active_lossroom:
+                        final_d = active_lossroom
                         flags.append("CAP_ENFORCED")
-                        flags.append("[ALERT_24H_EXCHANGE_CAP_CLAMPED]")
+                        if active_lossroom == lossroom_pairwise:
+                            flags.append("[ALERT_PAIRWISE_CAP_CLAMPED]")
+                        else:
+                            flags.append("[ALERT_GLOBAL_CASUAL_CAP_CLAMPED]")
                     else:
                         final_d = raw_d
 
@@ -493,8 +557,6 @@ class RyftV16:
                 new_rd = rd - ((rd - raw_new_rd) * (cfg.get("PROVISIONAL_RD_CONTRACTION_RATIO", 0.35) if prov else 1.0))
             
             # Opponent and Match Projection for Simulation Preview
-            opp_ids = [p3["player_id"], p4["player_id"]] if is_a else [p1["player_id"], p2["player_id"]]
-            opp_ids = [oid for oid in opp_ids if oid is not None]
             past_opps = conn.execute("""
                 SELECT DISTINCT opp_id FROM (
                     SELECT team_b_p1_id as opp_id FROM matches WHERE team_a_p1_id = ? OR team_a_p2_id = ? UNION
@@ -644,7 +706,7 @@ def build_pdf_document():
         ("Bit 10: Option A Asymmetric Ice-Out", "Defeat Gap>=2.0 => D_D=0.05 | Win Gap>=2.5 => D_D=0.25", "Slashes anchor loss by up to 95% on freeze-outs."),
         ("Bit 11: Decoupled Bayesian RD Contraction", "RD_new = max(30.0, sqrt(1 / (1/RD^2 + Variance)))", "Buffers uncertainty contraction via cohort Omega factor."),
         ("Bit 12: Performance Interpolation", "Delta = (R_perf - R) * Alpha", "Rightsizes unrated smurfs directly to true skill in 3-5 matches."),
-        ("Bit 13/14: Unordered Pod & Session Caps", "Rolling Cap: 0.150 Casual | 0.300 Session", "Prevents farming by clamping the sum of all deltas in a session."),
+        ("Bit 13/14: Dual-Cap Casual Headroom & Session Caps", "Rolling Pairwise Cap: 0.150 | Global Casual Governor: 0.250 | Session: 0.300", "Stateful dual-cap structure preventing farm loops while permitting multi-court activity."),
         ("Bit 15: Point-In-Time Tournament Desktop", "Delta_additive = (R_past_perf - R_past) * 1.15", "Asynchronous ingestion calculating deltas via historical timestamps."),
         ("Bit 22: Tikhonov Damping & Affine Diffusion", "W_conf = K / (K + 3.0)", "Scales Hawking macro offsets by bridge traveler count (K)."),
         ("Bit 23: Hysteresis Soft Floor", "Buffer = 0.050 | display_rating remains pinned if losses < 3", "Decouples public ratings from minor daily variance drops.")
@@ -1373,7 +1435,7 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
                                 sm["score_team_a"], sm["score_team_b"], sm["set_scores_json"], max(sm["games_winner"], sm["score_team_a"]), min(sm["games_loser"], sm["score_team_b"]),
                                 out["ta_r"], out["tb_r"], out["ea"], out["applied_m_c"], out["mov"],
                                 out["res"][0]["delta"], out["res"][2]["delta"] if not is_sing else 0.0,
-                                out["res"][1]["delta"], out["res"][3]["delta"] if not is_sing else 0.0, json.dumps(all_guardrails), ts))
+                                out["res"][1]["delta"], out["res"][3]["delta"] if not is_singles else 0.0, json.dumps(all_guardrails), ts))
 
                             for pr in out["res"]:
                                 conn.execute("""UPDATE players SET latent_mmr=?, display_rating=?, rating_deviation=?, rating_accuracy_pct=?, calibration_tier=?, is_provisional=?, consecutive_losses=?, rolling_90d_peak=max(rolling_90d_peak, ?), rolling_180d_peak=max(rolling_180d_peak, ?), rolling_365d_peak=max(rolling_365d_peak, ?), last_match_time=? WHERE player_id=?""",
@@ -1753,7 +1815,7 @@ elif nav == "🏢 Venues & Regions":
 
     with ba2.expander("➕ Add City", expanded=False):
         ci_name = st.text_input("City Name", key="ac_name")
-        countries = conn.execute("SELECT location_id, location_name FROM locations WHERE location_type = 'COUNTRY' AND is_active = 1").fetchall()
+        countries = conn.execute("SELECT location_id, location_name, country_code FROM locations WHERE location_type = 'COUNTRY'").fetchall()
         co_map = {c["location_name"]: c for c in countries}
         co_parent = st.selectbox("Parent Country", list(co_map.keys()) if co_map else ["None"], key="ac_parent")
         if st.button("Register City", type="primary"):

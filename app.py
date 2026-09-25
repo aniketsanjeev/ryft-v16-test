@@ -160,8 +160,10 @@ def seed_factory_parameters(cursor, overwrite_existing=False):
         ("RD_MIN", 30.0, 1, "Certainty Floor", "Absolute uncertainty floor.", "Prevents RD dropping below 30.0.", "6. Uncertainty & Rust"),
         ("RD_MAX", 350.0, 1, "Unrated Starting RD", "Uncertainty assigned at registration.", "Starting uncertainty.", "6. Uncertainty & Rust"),
         ("RD_INFO_VARIANCE", 65.0, 1, "Contraction Speed", "Denominator in RD shrinkage.", "Lower values shrink RD faster.", "6. Uncertainty & Rust"),
-        ("INACTIVITY_CONSTANT", 12.0, 1, "Inactivity Rust Rate", "Monthly uncertainty growth.", "Points of RD regained per month.", "6. Uncertainty & Rust"),
-        ("TEMPORAL_DRIFT_CONSTANT", 1.5, 1, "Inactivity Drift Constant", "Daily uncertainty expansion constant (RD points per sqrt(day)).", "Default 1.5.", "6. Uncertainty & Rust"),
+        ("INACTIVITY_CONSTANT", 12.0, 1, "Inactivity Rust Rate (Monthly)", "Monthly uncertainty growth for background cron cycles.", "Points of RD regained per month.", "6. Uncertainty & Rust"),
+        ("TEMPORAL_DRIFT_CONSTANT", 5.50, 1, "Inactivity Drift Constant (c)", "Daily uncertainty expansion constant: sqrt(RD^2 + c^2 * delta_days).", "Default 5.50 (Tuning: 1.50 mild, 5.50 standard, 7.50 re-qualification).", "6. Uncertainty & Rust"),
+        ("INACTIVITY_GRACE_DAYS", 7.0, 1, "Inactivity Grace Window (Days)", "Days of inactivity permitted before temporal rust begins accumulating.", "Default 7.0 days.", "6. Uncertainty & Rust"),
+        ("INACTIVITY_REPROVISION_THRESHOLD", 100.0, 1, "Inactivity Reprovisioning RD Ceiling", "RD threshold where inactive verified players are flagged for reprovisioning [PR].", "Default 100.0.", "6. Uncertainty & Rust"),
         ("COHORT_FACTOR_0_PROV", 1.00, 1, "Omega 0 Factor", "Contraction against verified anchors.", "100% gain.", "6. Uncertainty & Rust"),
         ("COHORT_FACTOR_1_PROV", 0.75, 1, "Omega 1 Factor", "Contraction with 1 unrated player.", "75% gain.", "6. Uncertainty & Rust"),
         ("COHORT_FACTOR_2_PROV", 0.50, 1, "Omega 2 Factor", "Contraction with 2 unrated players.", "50% gain.", "6. Uncertainty & Rust"),
@@ -385,8 +387,9 @@ class RyftV16:
                 try:
                     last_dt = datetime.fromisoformat(last_ts.replace("Z", "+00:00"))
                     delta_days = max(0.0, (match_dt - last_dt).total_seconds() / 86400.0)
-                    c_drift = float(cfg.get("TEMPORAL_DRIFT_CONSTANT", 1.5))
-                    if delta_days >= 7.0:
+                    c_drift = float(cfg.get("TEMPORAL_DRIFT_CONSTANT", 5.50))
+                    grace_days = float(cfg.get("INACTIVITY_GRACE_DAYS", 7.0))
+                    if delta_days >= grace_days:
                         rust_rd = math.sqrt(stored_rd**2 + (c_drift**2) * delta_days)
                         eff_rd = min(350.0, rust_rd)
                         px_flags.append(f"[ALERT_INACTIVITY_RUST] ({int(delta_days)}d layoff)")
@@ -397,7 +400,8 @@ class RyftV16:
             else:
                 eff_rd = stored_rd
             
-            if eff_rd > 100.0 and px.get("calibration_tier") == "VERIFIED":
+            reprov_threshold = float(cfg.get("INACTIVITY_REPROVISION_THRESHOLD", 100.0))
+            if eff_rd > reprov_threshold and px.get("calibration_tier") == "VERIFIED":
                 px_flags.append("[ALERT_INACTIVITY_REPROVISION_FLAG]")
 
             px["effective_pre_rd"] = eff_rd
@@ -871,6 +875,7 @@ elif nav == "🎾 Log Matches":
     conn = get_db_connection()
     venues = conn.execute("SELECT * FROM venues WHERE is_active = 1").fetchall()
     players = conn.execute("SELECT * FROM players WHERE calibration_tier != 'INACTIVE' ORDER BY display_name").fetchall()
+    # Query all active match formats across all categories
     formats = conn.execute("SELECT * FROM match_formats WHERE is_active = 1 ORDER BY category, mc_weight DESC, target_games, total_points").fetchall()
     conn.close()
 
@@ -1521,7 +1526,7 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
                                 sm["score_team_a"], sm["score_team_b"], sm["set_scores_json"], max(sm["games_winner"], sm["score_team_a"]), min(sm["games_loser"], sm["score_team_b"]),
                                 out["ta_r"], out["tb_r"], out["ea"], out["applied_m_c"], out["mov"],
                                 out["res"][0]["delta"], out["res"][2]["delta"] if not is_sing else 0.0,
-                                out["res"][1]["delta"], out["res"][3]["delta"] if not is_singles else 0.0, json.dumps(all_guardrails), ts))
+                                out["res"][1]["delta"], out["res"][3]["delta"] if not is_sing else 0.0, json.dumps(all_guardrails), ts))
 
                             for pr in out["res"]:
                                 conn.execute("""UPDATE players SET latent_mmr=?, display_rating=?, rating_deviation=?, rating_accuracy_pct=?, calibration_tier=?, is_provisional=?, consecutive_losses=?, rolling_90d_peak=max(rolling_90d_peak, ?), rolling_180d_peak=max(rolling_180d_peak, ?), rolling_365d_peak=max(rolling_365d_peak, ?), last_match_time=? WHERE player_id=?""",
@@ -1703,7 +1708,7 @@ elif nav == "🏆 Tournament Desk (Delayed)":
                         ''', (m_id, t_data["venue_id"], tm["format_id"], tm["is_singles"], 1,
                               tm["team_a_p1_id"], tm["team_a_p2_id"], tm["team_b_p1_id"], tm["team_b_p2_id"],
                               tm["score_team_a"], tm["score_team_b"], tm["games_winner"], tm["games_loser"],
-                              out["ta_r"], out["tb_r"], out["ea"], mc, out["mov"],
+                              out["ta_r"], out["tb_r"], out["ea"], out["applied_m_c"], out["mov"],
                               out["res"][0]["delta"], out["res"][2]["delta"] if not tm["is_singles"] else 0.0,
                               out["res"][1]["delta"], out["res"][3]["delta"] if not tm["is_singles"] else 0.0, json.dumps(all_guardrails), ts_proc, ts))
 

@@ -7,6 +7,7 @@ import io
 from datetime import datetime, timezone, date, time
 import pandas as pd
 
+# Optional ReportLab import for PDF generation
 try:
     from reportlab.lib.pagesizes import letter
     from reportlab.lib import colors
@@ -90,7 +91,7 @@ def init_db():
         cats = [("Beginner", 0.0, 0.999, 1, 1.0), ("Beginner+", 1.0, 1.999, 2, 1.0), ("Intermediate", 2.0, 3.499, 3, 1.0), ("Intermediate+", 3.5, 4.499, 4, 1.0), ("Advanced", 4.5, 5.499, 5, 1.0), ("Pro", 5.5, 6.299, 6, 1.0), ("Elite", 6.3, 7.0, 7, 1.0)]
         for cn, cmn, cmx, so, sm in cats: c.execute("INSERT OR IGNORE INTO rating_categories VALUES (?,?,?,?,?)", (cn, cmn, cmx, so, sm))
 
-    # All 18 Official V.16 Match Formats (Complete Registry)
+    # All 18 Official Formats Active for Standalone & Session Workflows
     official_formats = [
         ("STD_B03", "Best of 3 Sets", "MULTI_SET", 1.00, None, None, 0, 1),
         ("STD_B05", "Best of 5 Sets", "MULTI_SET", 1.00, None, None, 0, 1),
@@ -171,6 +172,8 @@ def seed_factory_parameters(cursor, overwrite_existing=False):
         ("TARGET_OPPONENTS_PROVISIONAL", 2, 1, "Target Opponents: Provisional", "Opponent quota during onboarding.", "Satisfies diversity.", "7. Accuracy & Tri-Gates"),
         ("TARGET_MATCHES_ANCHOR", 15, 1, "Target Matches: Anchor", "Match quota for Anchor tier.", "Required to reach Anchor.", "7. Accuracy & Tri-Gates"),
         ("PROVISIONAL_RD_GATE", 100.0, 1, "Tri-Gate Max RD", "RD must be <= 100 to exit [PR].", "Uncertainty ceiling to graduate.", "7. Accuracy & Tri-Gates"),
+        ("PROVISIONAL_MIN_MATCHES", 5, 1, "Tri-Gate Min Matches", "Verified matches to exit [PR].", "Volume required to shed badge.", "7. Accuracy & Tri-Gates"),
+        ("PROVISIONAL_MIN_OPPONENTS", 3, 1, "Tri-Gate Min Opponents", "Unique opponents to exit [PR].", "Distinct opponents required.", "7. Accuracy & Tri-Gates"),
         ("ISLAND_ACCURACY_CAP", 80.0, 1, "Island Geographic Cap", "Max accuracy if City has 0 bridges.", "Caps accuracy.", "7. Accuracy & Tri-Gates"),
         ("BRIDGE_RD_THRESHOLD", 80.0, 1, "Bridge Max RD", "Max RD to qualify as Bridge.", "Count if RD <= 80.", "8. Hawking Macro"),
         ("BRIDGE_MIN_MATCHES", 5, 1, "Bridge Min Matches", "Away matches required to link cities.", "Matches required before linking.", "8. Hawking Macro"),
@@ -345,7 +348,7 @@ class RyftV16:
                         raw_d *= dd
                         if dd < 1.00: flags.append(f"ANTI_CARRY ({int((1-dd)*100)}%)")
 
-            # Bit 16 Sybil Trust Bypass (<5 matches)
+            # Bit 16: Sybil Trust Bypass (<5 matches)
             m_played = int(p.get("verified_matches_count", 0))
             w_g = 1.0
             if m_played >= 5:
@@ -404,13 +407,45 @@ class RyftV16:
                 raw_new_rd = max(30.0, math.sqrt(1.0 / (1.0 / (rd**2) + (mc * s_margin * (g_opp**2) * omega) / (sig**2))))
                 new_rd = rd - ((rd - raw_new_rd) * (cfg.get("PROVISIONAL_RD_CONTRACTION_RATIO", 0.35) if prov else 1.0))
             
-            loc = conn.execute("SELECT active_bridge_count FROM locations WHERE location_id = ?", (p.get("home_city_id", ""),)).fetchone()
-            acc_comp, a_rd, a_m, a_d = cls.calc_accuracy(new_rd, m_played + (0 if is_dry else 1), int(p.get("unique_opponents_count", 0)) + (0 if is_dry else 1), prov, loc["active_bridge_count"] if loc else 0, cfg)
+            # Opponent and Match Projection for Simulation Preview
+            opp_ids = [p3["player_id"], p4["player_id"]] if is_a else [p1["player_id"], p2["player_id"]]
+            opp_ids = [oid for oid in opp_ids if oid is not None]
+            past_opps = conn.execute("""
+                SELECT DISTINCT opp_id FROM (
+                    SELECT team_b_p1_id as opp_id FROM matches WHERE team_a_p1_id = ? OR team_a_p2_id = ? UNION
+                    SELECT team_b_p2_id as opp_id FROM matches WHERE (team_a_p1_id = ? OR team_a_p2_id = ?) AND team_b_p2_id IS NOT NULL UNION
+                    SELECT team_a_p1_id as opp_id FROM matches WHERE team_b_p1_id = ? OR team_b_p2_id = ? UNION
+                    SELECT team_a_p2_id as opp_id FROM matches WHERE (team_b_p1_id = ? OR team_b_p2_id = ?) AND team_a_p2_id IS NOT NULL
+                ) WHERE opp_id IS NOT NULL
+            """, (p["player_id"], p["player_id"], p["player_id"], p["player_id"], p["player_id"], p["player_id"], p["player_id"], p["player_id"])).fetchall()
+            past_opp_set = {row[0] for row in past_opps}
+            new_opps_in_match = sum(1 for oid in opp_ids if oid not in past_opp_set)
             
-            gate = (new_rd <= cfg.get("PROVISIONAL_RD_GATE", 100.0) and m_played >= 10 and int(p.get("unique_opponents_count", 0)) >= 5)
-            new_prov = 0 if (gate or is_manual_override) else 1
-            tier = "ANCHOR" if (acc_comp >= 90.0 and new_prov == 0 and new_rd <= 60.0) else ("VERIFIED" if (acc_comp >= cfg.get("TIER_PROVISIONAL_MAX", 69.99) and new_prov == 0) else "PROVISIONAL")
-            if is_manual_override and tier == "PROVISIONAL": tier = "VERIFIED"
+            projected_m = m_played + 1
+            projected_opps = int(p.get("unique_opponents_count", 0)) + new_opps_in_match
+            
+            loc = conn.execute("SELECT active_bridge_count FROM locations WHERE location_id = ?", (p.get("home_city_id", ""),)).fetchone()
+            bridge_k = loc["active_bridge_count"] if loc else 0
+
+            # Tri-Gate Evaluation
+            min_m = int(cfg.get("PROVISIONAL_MIN_MATCHES", 5))
+            min_o = int(cfg.get("PROVISIONAL_MIN_OPPONENTS", 3))
+            rd_gate = float(cfg.get("PROVISIONAL_RD_GATE", 100.0))
+            
+            tri_gate_passed = (new_rd <= rd_gate and projected_m >= min_m and projected_opps >= min_o)
+            new_prov = 0 if (tri_gate_passed or is_manual_override) else 1
+
+            # Recalculate Accuracy Using New Provisional State
+            acc_comp, a_rd, a_m, a_d = cls.calc_accuracy(new_rd, projected_m, projected_opps, new_prov, bridge_k, cfg)
+
+            # Public Calibration Tier Decoupled from Provisional Accuracy Trap
+            if new_prov == 1:
+                tier = "PROVISIONAL"
+            else:
+                if acc_comp >= 90.0 and new_rd <= 60.0:
+                    tier = "ANCHOR"
+                else:
+                    tier = "VERIFIED"
 
             res.append({
                 "pid": p["player_id"], "name": format_pr_name(p.get("display_name", "Unknown"), prov), "raw_name": p.get("display_name", "Unknown"),
@@ -1575,8 +1610,8 @@ elif nav == "👥 Player Roster & Calibration":
 
                 st.write("**Tri-Gate Status:**")
                 g1, g2, g3 = st.columns(3)
-                g1.write(f"{'✅' if p_data['verified_matches_count']>=10 else '❌'} Matches: {p_data['verified_matches_count']}/10")
-                g2.write(f"{'✅' if p_data['unique_opponents_count']>=5 else '❌'} Opponents: {p_data['unique_opponents_count']}/5")
+                g1.write(f"{'✅' if p_data['verified_matches_count']>=5 else '❌'} Matches: {p_data['verified_matches_count']}/5")
+                g2.write(f"{'✅' if p_data['unique_opponents_count']>=3 else '❌'} Opponents: {p_data['unique_opponents_count']}/3")
                 g3.write(f"{'✅' if p_data['rating_deviation']<=100.0 else '❌'} RD: {p_data['rating_deviation']:.1f}")
 
                 with st.form("edit_player_form"):
@@ -1772,7 +1807,7 @@ elif nav == "⚙️ Global Config":
 
         st.markdown("---")
         st.markdown("### 🎾 Official Match Formats & Confidence Multipliers ($M_C$)")
-        all_formats = conn.execute("SELECT format_id, format_name, category, mc_weight FROM match_formats ORDER BY category, mc_weight DESC, format_id").fetchall()
+        all_formats = conn.execute("SELECT format_id, format_name, category, mc_weight FROM match_formats ORDER BY category, mc_weight DESC, target_games, total_points").fetchall()
         with st.expander("🛠️ Edit Format Weights ($M_C$ Multipliers)", expanded=False):
             with st.form("edit_mc_weights_form"):
                 updated_mc = {}

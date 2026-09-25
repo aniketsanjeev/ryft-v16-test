@@ -90,7 +90,7 @@ def init_db():
         cats = [("Beginner", 0.0, 0.999, 1, 1.0), ("Beginner+", 1.0, 1.999, 2, 1.0), ("Intermediate", 2.0, 3.499, 3, 1.0), ("Intermediate+", 3.5, 4.499, 4, 1.0), ("Advanced", 4.5, 5.499, 5, 1.0), ("Pro", 5.5, 6.299, 6, 1.0), ("Elite", 6.3, 7.0, 7, 1.0)]
         for cn, cmn, cmx, so, sm in cats: c.execute("INSERT OR IGNORE INTO rating_categories VALUES (?,?,?,?,?)", (cn, cmn, cmx, so, sm))
 
-    # All 18 Official V.16 Match Formats
+    # All 18 Official V.16 Formats
     official_formats = [
         ("STD_B03", "Best of 3 Sets", "MULTI_SET", 1.00, None, None, 0, 1),
         ("STD_B05", "Best of 5 Sets", "MULTI_SET", 1.00, None, None, 0, 1),
@@ -341,16 +341,31 @@ class RyftV16:
                     # Verified players strictly non-negative on wins
                     raw_d = max(0.0010, standard_einstein_delta)
             else:
-                # Defeat processing
+                # Balanced PR Defeat Evaluation
                 if prov and s_a != s_b:
                     actual_game_ratio = (g_l_raw + 0.5) / (g_w_raw + 0.5)
                     r_perf_team = opp_team_r + cfg.get("LOGISTIC_BETA", 2.0) * math.log10(actual_game_ratio)
-                    raw_pr_delta = (r_perf_team - r) * cfg.get("PROVISIONAL_ABSORPTION_ALPHA", 0.45) * mc * g_opp
-                    max_d = cfg.get("MAX_PROVISIONAL_DELTA", 0.750)
-                    raw_d = max(-max_d, min(max_d, raw_pr_delta))
-                    flags.append("RIGHTSIZING_INTERPOLATION")
+                    
+                    if r_perf_team > r:
+                        tot_games = g_w_raw + g_l_raw
+                        game_win_share = (g_l_raw / tot_games) if tot_games > 0 else 0.0
+                        if game_win_share < 0.30:  # e.g., 2 games out of 14 is 14.3% (< 30%)
+                            raw_d = 0.0000
+                            flags.append("[ALERT_LOSS_NON_POSITIVITY_CLAMP]")
+                        else:
+                            # Genuine close fight by an underdog (e.g. 5-7, 6-7 -> >35% game share)
+                            raw_discovery_delta = (r_perf_team - r) * 0.10 * mc * g_opp
+                            raw_d = min(0.0250, raw_discovery_delta)
+                            flags.append("[ALERT_UNDERDOG_DEFEAT_MICRO_DISCOVERY]")
+                    else:
+                        # Over-rated player lost as expected or underperformed: pull downward normally
+                        raw_pr_delta = (r_perf_team - r) * cfg.get("PROVISIONAL_ABSORPTION_ALPHA", 0.45) * mc * g_opp
+                        max_d = cfg.get("MAX_PROVISIONAL_DELTA", 0.750)
+                        raw_d = max(-max_d, min(0.0, raw_pr_delta))
+                        flags.append("RIGHTSIZING_INTERPOLATION")
                 else:
-                    raw_d = standard_einstein_delta
+                    # Verified phase: Guaranteed non-positive on defeat
+                    raw_d = min(0.0000, standard_einstein_delta)
 
             if not is_singles and partner and not is_quar:
                 gap = abs(r - float(partner.get("latent_mmr", 3.0)))
@@ -669,6 +684,7 @@ elif nav == "🎾 Log Matches":
     conn = get_db_connection()
     venues = conn.execute("SELECT * FROM venues WHERE is_active = 1").fetchall()
     players = conn.execute("SELECT * FROM players WHERE calibration_tier != 'INACTIVE' ORDER BY display_name").fetchall()
+    # Query all active match formats across all categories
     formats = conn.execute("SELECT * FROM match_formats WHERE is_active = 1 ORDER BY category, mc_weight DESC, target_games, total_points").fetchall()
     conn.close()
 

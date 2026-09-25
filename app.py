@@ -996,7 +996,6 @@ def seed_factory_parameters(cursor, overwrite_existing=False):
           "Limits automated macro shifts.",
           "8. Hawking Macro",
       ),
-      # Format Weights Configuration
       (
           "MC_STD_B03",
           1.000,
@@ -4014,11 +4013,478 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
 
       elif sub_nav == "📊 Standings & Atomic Commit":
         st.subheader("Event Standings & Final Engine Commit")
-        st.caption(
-            "Final results audit. Click commit below to persist all match"
-            " records atomically to the database."
+        staged_matches = conn.execute(
+            "SELECT * FROM session_matches WHERE session_id = ? AND"
+            " match_status = 'STAGED' ORDER BY match_order ASC",
+            (s_id,),
+        ).fetchall()
+
+        standings = {}
+        if s_data["team_format"] == "FIXED_TEAMS":
+          teams_meta = json.loads(s_data["teams_json"])
+          for t in teams_meta:
+            if t and t.get("p1"):
+              p1_n, p2_n = id_to_name.get(t["p1"], ""), id_to_name.get(
+                  t["p2"], ""
+              )
+              t_label = f"{p1_n} & {p2_n}"
+              standings[t_label] = {
+                  "Team": t_label,
+                  "Played": 0,
+                  "Won": 0,
+                  "Lost": 0,
+                  "Points Won": 0,
+                  "Points Lost": 0,
+                  "Diff": 0,
+              }
+          for sm in staged_matches:
+            p1_n, p2_n = id_to_name.get(
+                sm["team_a_p1_id"], ""
+            ), id_to_name.get(sm["team_a_p2_id"], "")
+            p3_n, p4_n = id_to_name.get(
+                sm["team_b_p1_id"], ""
+            ), id_to_name.get(sm["team_b_p2_id"], "")
+            tA, tB = f"{p1_n} & {p2_n}", f"{p3_n} & {p4_n}"
+            if tA in standings and tB in standings:
+              standings[tA]["Played"] += 1
+              standings[tB]["Played"] += 1
+              standings[tA]["Points Won"] += sm["score_team_a"]
+              standings[tB]["Points Won"] += sm["score_team_b"]
+              standings[tA]["Points Lost"] += sm["score_team_b"]
+              standings[tB]["Points Lost"] += sm["score_team_a"]
+              if sm["score_team_a"] > sm["score_team_b"]:
+                standings[tA]["Won"] += 1
+                standings[tB]["Lost"] += 1
+              elif sm["score_team_a"] < sm["score_team_b"]:
+                standings[tB]["Won"] += 1
+                standings[tA]["Lost"] += 1
+        else:
+          for pid in enrolled_ids:
+            standings[pid] = {
+                "Player": id_to_name.get(pid, pid),
+                "Played": 0,
+                "Won": 0,
+                "Lost": 0,
+                "Points Won": 0,
+                "Points Lost": 0,
+                "Diff": 0,
+            }
+          for sm in staged_matches:
+            for pid in [sm["team_a_p1_id"], sm["team_a_p2_id"]]:
+              if pid and pid in standings:
+                standings[pid]["Played"] += 1
+                standings[pid]["Points Won"] += sm["score_team_a"]
+                standings[pid]["Points Lost"] += sm["score_team_b"]
+                if sm["score_team_a"] > sm["score_team_b"]:
+                  standings[pid]["Won"] += 1
+                elif sm["score_team_a"] < sm["score_team_b"]:
+                  standings[pid]["Lost"] += 1
+            for pid in [sm["team_b_p1_id"], sm["team_b_p2_id"]]:
+              if pid and pid in standings:
+                standings[pid]["Played"] += 1
+                standings[pid]["Points Won"] += sm["score_team_b"]
+                standings[pid]["Points Lost"] += sm["score_team_a"]
+                if sm["score_team_b"] > sm["score_team_a"]:
+                  standings[pid]["Won"] += 1
+                elif sm["score_team_b"] < sm["score_team_a"]:
+                  standings[pid]["Lost"] += 1
+
+        for item in standings.values():
+          item["Diff"] = item["Points Won"] - item["Points Lost"]
+        df_stand = pd.DataFrame(list(standings.values())).sort_values(
+            by=["Won", "Diff", "Points Won"], ascending=[False, False, False]
+        )
+        st.markdown("#### 🏆 Session Standings")
+        st.dataframe(df_stand, use_container_width=True)
+
+        st.markdown("---")
+        st.markdown("#### 🔬 Sequential Pre/Post Session Audit")
+        if staged_matches:
+          temp_ratings = {}
+          cumulative_deltas = {}
+          for pid in enrolled_ids:
+            p_row = dict(p_meta[pid])
+            p_row["initial_mmr"] = p_row["latent_mmr"]
+            p_row["initial_rd"] = p_row["rating_deviation"]
+            p_row["initial_acc"] = p_row["rating_accuracy_pct"]
+            temp_ratings[pid] = p_row
+            cumulative_deltas[pid] = 0.0
+
+          for sm in staged_matches:
+            for pid in [
+                sm["team_a_p1_id"],
+                sm["team_a_p2_id"],
+                sm["team_b_p1_id"],
+                sm["team_b_p2_id"],
+            ]:
+              if pid and pid not in temp_ratings:
+                p_row = dict(p_meta[pid])
+                p_row["initial_mmr"] = p_row["latent_mmr"]
+                p_row["initial_rd"] = p_row["rating_deviation"]
+                p_row["initial_acc"] = p_row["rating_accuracy_pct"]
+                temp_ratings[pid] = p_row
+                cumulative_deltas[pid] = 0.0
+
+            p1_d = {
+                **temp_ratings[sm["team_a_p1_id"]],
+                "player_id": sm["team_a_p1_id"],
+            }
+            p3_d = {
+                **temp_ratings[sm["team_b_p1_id"]],
+                "player_id": sm["team_b_p1_id"],
+            }
+            p2_d = (
+                {
+                    **temp_ratings[sm["team_a_p2_id"]],
+                    "player_id": sm["team_a_p2_id"],
+                }
+                if sm["team_a_p2_id"]
+                else None
+            )
+            p4_d = (
+                {
+                    **temp_ratings[sm["team_b_p2_id"]],
+                    "player_id": sm["team_b_p2_id"],
+                }
+                if sm["team_b_p2_id"]
+                else None
+            )
+
+            is_sing = s_data["match_mode"] == "SINGLES"
+            out = RyftV16.compute_match(
+                p1_d,
+                p2_d,
+                p3_d,
+                p4_d,
+                sm["score_team_a"],
+                sm["score_team_b"],
+                max(sm["games_winner"], sm["score_team_a"]),
+                min(sm["games_loser"], sm["score_team_b"]),
+                s_data["format_id"],
+                s_data["venue_id"],
+                is_singles=is_sing,
+                session_id=s_id,
+                session_checked_in=s_data["active_checked_in_count"],
+                is_tournament=bool(s_data.get("is_tournament", 0)),
+                is_dry=True,
+                conn=conn,
+                cumulative_deltas=cumulative_deltas,
+                match_timestamp=s_data.get("created_at"),
+            )
+            for pr in out["res"]:
+              temp_ratings[pr["pid"]]["latent_mmr"] = pr["post_r"]
+              temp_ratings[pr["pid"]]["rating_deviation"] = pr["post_rd"]
+              temp_ratings[pr["pid"]]["rating_accuracy_pct"] = pr["acc"]
+              temp_ratings[pr["pid"]]["calibration_tier"] = pr["tier"]
+              cumulative_deltas[pr["pid"]] += pr["delta"]
+
+          summary_rows = []
+          for pid, pdata in temp_ratings.items():
+            tot_delta = cumulative_deltas[pid]
+            summary_rows.append({
+                "Player": format_pr_name(
+                    pdata["display_name"], pdata["is_provisional"]
+                ),
+                "Pre MMR": f"{pdata['initial_mmr']:.3f}",
+                "Pre RD": f"{pdata['initial_rd']:.1f}",
+                "Pre Acc %": f"{pdata['initial_acc']:.1f}%",
+                "Total Capped Delta": f"{tot_delta:+.4f}",
+                "Projected Post MMR": f"{pdata['latent_mmr']:.3f}",
+                "Projected Post RD": f"{pdata['rating_deviation']:.1f}",
+                "Projected Post Acc %": f"{pdata['rating_accuracy_pct']:.1f}%",
+                "Tier": pdata.get("calibration_tier", "VERIFIED"),
+            })
+          st.dataframe(pd.DataFrame(summary_rows), use_container_width=True)
+
+        st.markdown("---")
+        col_sub1, col_sub2 = st.columns(2)
+        if col_sub1.button("💾 Save Draft", use_container_width=True):
+          st.success("Draft saved.")
+        if col_sub2.button(
+            "🚀 VERIFY & COMMIT SESSION TO RATING ENGINE",
+            type="primary",
+            use_container_width=True,
+        ):
+          if not staged_matches:
+            st.error("No staged matches.")
+          else:
+            ts = datetime.now(timezone.utc).isoformat()
+            session_pids_to_sync = set()
+            cumulative_deltas = {}
+            temp_ratings = {}
+            for pid in enrolled_ids:
+              temp_ratings[pid] = dict(p_meta[pid])
+              cumulative_deltas[pid] = 0.0
+
+            ven_row = conn.execute(
+                "SELECT city_id, country_code FROM venues WHERE venue_id = ?",
+                (s_data["venue_id"],),
+            ).fetchone()
+            v_city = ven_row["city_id"]
+            city_bridge_counts, country_bridge_counts = 0, 0
+
+            for sm in staged_matches:
+              for pid in [
+                  sm["team_a_p1_id"],
+                  sm["team_a_p2_id"],
+                  sm["team_b_p1_id"],
+                  sm["team_b_p2_id"],
+              ]:
+                if pid and pid not in temp_ratings:
+                  temp_ratings[pid] = dict(p_meta[pid])
+                  cumulative_deltas[pid] = 0.0
+
+              p1_d = {
+                  **temp_ratings[sm["team_a_p1_id"]],
+                  "player_id": sm["team_a_p1_id"],
+              }
+              p3_d = {
+                  **temp_ratings[sm["team_b_p1_id"]],
+                  "player_id": sm["team_b_p1_id"],
+              }
+              p2_d = (
+                  {
+                      **temp_ratings[sm["team_a_p2_id"]],
+                      "player_id": sm["team_a_p2_id"],
+                  }
+                  if sm["team_a_p2_id"]
+                  else None
+              )
+              p4_d = (
+                  {
+                      **temp_ratings[sm["team_b_p2_id"]],
+                      "player_id": sm["team_b_p2_id"],
+                  }
+                  if sm["team_b_p2_id"]
+                  else None
+              )
+
+              is_sing = s_data["match_mode"] == "SINGLES"
+              out = RyftV16.compute_match(
+                  p1_d,
+                  p2_d,
+                  p3_d,
+                  p4_d,
+                  sm["score_team_a"],
+                  sm["score_team_b"],
+                  max(sm["games_winner"], sm["score_team_a"]),
+                  min(sm["games_loser"], sm["score_team_b"]),
+                  s_data["format_id"],
+                  s_data["venue_id"],
+                  is_singles=is_sing,
+                  session_id=s_id,
+                  session_checked_in=s_data["active_checked_in_count"],
+                  is_tournament=bool(s_data.get("is_tournament", 0)),
+                  conn=conn,
+                  cumulative_deltas=cumulative_deltas,
+                  match_timestamp=ts,
+              )
+
+              m_id = (
+                  f"M_SESS_{sm['session_match_id']}_{uuid.uuid4().hex[:6]}"
+              )
+              is_v_b = 1 if out.get("is_venue_bridge") else 0
+              is_c_b = 1 if out.get("is_city_bridge") else 0
+              is_co_b = 1 if out.get("is_country_bridge") else 0
+
+              if is_c_b:
+                city_bridge_counts += 1
+              if is_co_b:
+                country_bridge_counts += 1
+
+              all_guardrails = []
+              for pr in out["res"]:
+                all_guardrails.extend(pr["flags"])
+
+              conn.execute(
+                  """
+                                INSERT INTO matches (
+                                    match_id, venue_id, format_id, session_id, is_singles, is_tournament,
+                                    is_venue_bridge, is_city_bridge, is_country_bridge, team_a_p1_id, team_a_p2_id, team_b_p1_id, team_b_p2_id,
+                                    score_team_a, score_team_b, set_scores_json, games_winner, games_loser,
+                                    pre_rating_a, pre_rating_b, win_expectancy_a, applied_m_c, applied_s_margin,
+                                    delta_r_p1, delta_r_p2, delta_r_p3, delta_r_p4, guardrails_summary, match_timestamp
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                  (
+                      m_id,
+                      s_data["venue_id"],
+                      s_data["format_id"],
+                      s_id,
+                      1 if is_sing else 0,
+                      1 if s_data.get("is_tournament", 0) else 0,
+                      is_v_b,
+                      is_c_b,
+                      is_co_b,
+                      p1_d["player_id"],
+                      p2_d["player_id"] if p2_d else None,
+                      p3_d["player_id"],
+                      p4_d["player_id"] if p4_d else None,
+                      sm["score_team_a"],
+                      sm["score_team_b"],
+                      sm["set_scores_json"],
+                      max(sm["games_winner"], sm["score_team_a"]),
+                      min(sm["games_loser"], sm["score_team_b"]),
+                      out["ta_r"],
+                      out["tb_r"],
+                      out["ea"],
+                      out["applied_m_c"],
+                      out["mov"],
+                      out["res"][0]["delta"],
+                      out["res"][2]["delta"] if not is_sing else 0.0,
+                      out["res"][1]["delta"],
+                      out["res"][3]["delta"] if not is_sing else 0.0,
+                      json.dumps(all_guardrails),
+                      ts,
+                  ),
+              )
+
+              for pr in out["res"]:
+                conn.execute(
+                    """UPDATE players SET latent_mmr=?, display_rating=?, rating_deviation=?, rating_accuracy_pct=?, calibration_tier=?, is_provisional=?, consecutive_losses=?, rolling_90d_peak=max(rolling_90d_peak, ?), rolling_180d_peak=max(rolling_180d_peak, ?), rolling_365d_peak=max(rolling_365d_peak, ?), last_match_time=? WHERE player_id=?""",
+                    (
+                        pr["post_r"],
+                        pr["post_disp"],
+                        pr["post_rd"],
+                        pr["acc"],
+                        pr["tier"],
+                        pr["prov"],
+                        pr["c_loss"],
+                        pr["post_r"],
+                        pr["post_r"],
+                        pr["post_r"],
+                        ts,
+                        pr["pid"],
+                    ),
+                )
+                conn.execute(
+                    """INSERT INTO match_logs (log_id, match_id, player_id, pre_latent_mmr, post_latent_mmr, pre_display_rating, post_display_rating, pre_rd, post_rd, pre_accuracy_pct, post_accuracy_pct, delta_r, guardrails_triggered, logged_at) 
+                                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        f"L_{pr['pid']}_{m_id}",
+                        m_id,
+                        pr["pid"],
+                        pr["pre_r"],
+                        pr["post_r"],
+                        pr["pre_disp"],
+                        pr["post_disp"],
+                        pr["pre_rd"],
+                        pr["post_rd"],
+                        pr["pre_acc"],
+                        pr["acc"],
+                        pr["delta"],
+                        json.dumps(pr["flags"]),
+                        ts,
+                    ),
+                )
+                session_pids_to_sync.add(pr["pid"])
+                temp_ratings[pr["pid"]]["latent_mmr"] = pr["post_r"]
+                temp_ratings[pr["pid"]]["rating_deviation"] = pr["post_rd"]
+                temp_ratings[pr["pid"]]["rating_accuracy_pct"] = pr["acc"]
+                cumulative_deltas[pr["pid"]] += pr["delta"]
+
+              conn.execute(
+                  "UPDATE session_matches SET match_status='COMMITTED',"
+                  " committed_match_id=? WHERE session_match_id=?",
+                  (m_id, sm["session_match_id"]),
+              )
+
+            conn.execute(
+                "UPDATE venues SET total_matches_played = total_matches_played"
+                " + ?, city_bridge_matches_count = city_bridge_matches_count +"
+                " ?, country_bridge_matches_count ="
+                " country_bridge_matches_count + ? WHERE venue_id = ?",
+                (
+                    len(staged_matches),
+                    city_bridge_counts,
+                    country_bridge_counts,
+                    s_data["venue_id"],
+                ),
+            )
+            conn.execute(
+                "UPDATE locations SET total_matches_played = total_matches_played"
+                " + ? WHERE location_id = ?",
+                (len(staged_matches), v_city),
+            )
+            conn.execute(
+                "UPDATE sessions SET session_status='COMPLETED', completed_at=?,"
+                " current_stage='COMPLETED' WHERE session_id=?",
+                (ts, s_id),
+            )
+
+            for pid in session_pids_to_sync:
+              RyftV16.sync_player_aggregates(pid, conn=conn)
+            conn.commit()
+            st.balloons()
+            st.success("✅ Session committed!")
+            st.rerun()
+
+    with s_tab1:
+      up_sessions = conn.execute("""
+                SELECT s.*, v.venue_name, f.format_name, f.category as fmt_cat 
+                FROM sessions s JOIN venues v ON s.venue_id = v.venue_id 
+                JOIN match_formats f ON s.format_id = f.format_id 
+                WHERE s.session_status = 'CONFIG' ORDER BY s.created_at DESC
+            """).fetchall()
+      if not up_sessions:
+        st.info("No upcoming sessions.")
+      else:
+        sel_up = st.selectbox(
+            "Choose Upcoming Session",
+            [s["session_title"] for s in up_sessions],
+            key="sb_up",
+        )
+        render_session_workspace(
+            [
+                dict(s)
+                for s in up_sessions
+                if s["session_title"] == sel_up
+            ][0]
         )
 
+    with s_tab2:
+      live_sessions = conn.execute("""
+                SELECT s.*, v.venue_name, f.format_name, f.category as fmt_cat 
+                FROM sessions s JOIN venues v ON s.venue_id = v.venue_id 
+                JOIN match_formats f ON s.format_id = f.format_id 
+                WHERE s.session_status = 'LIVE' ORDER BY s.created_at DESC
+            """).fetchall()
+      if not live_sessions:
+        st.info("No live sessions currently in progress.")
+      else:
+        sel_live = st.selectbox(
+            "Choose Live Session",
+            [s["session_title"] for s in live_sessions],
+            key="sb_live",
+        )
+        render_session_workspace(
+            [
+                dict(s)
+                for s in live_sessions
+                if s["session_title"] == sel_live
+            ][0]
+        )
+
+    with s_tab3:
+      comp_sessions = conn.execute("""
+                SELECT s.*, v.venue_name, f.format_name, f.category as fmt_cat 
+                FROM sessions s JOIN venues v ON s.venue_id = v.venue_id 
+                JOIN match_formats f ON s.format_id = f.format_id 
+                WHERE s.session_status = 'COMPLETED' ORDER BY s.completed_at DESC
+            """).fetchall()
+      if not comp_sessions:
+        st.info("No completed sessions.")
+      else:
+        for csess in comp_sessions:
+          with st.expander(
+              f"🏆 {csess['session_title']} — {csess['venue_name']}"
+              f" ({csess['completed_at'][:10] if csess['completed_at'] else ''})"
+          ):
+            st.write(
+                f"Format: **{csess['format_name']}** | Mode:"
+                f" **{csess['team_format']}** | Enrolled:"
+                f" **{csess['player_count']}**"
+            )
   conn.close()
 
 elif nav == "🏆 Tournament Desk (Delayed)":
@@ -4211,11 +4677,299 @@ elif nav == "🏆 Tournament Desk (Delayed)":
               st.success("Match Staged in Batch!")
               st.rerun()
 
+      t_matches = conn.execute(
+          "SELECT * FROM tourney_matches WHERE tourney_id = ? ORDER BY"
+          " match_time ASC",
+          (t_id,),
+      ).fetchall()
+      st.markdown(f"#### 📋 Staged Scorecards ({len(t_matches)})")
+
+      def get_historical_state(pid, timestamp, conn):
+        log = conn.execute(
+            "SELECT post_latent_mmr, post_rd, post_accuracy_pct,"
+            " post_display_rating FROM match_logs WHERE player_id=? AND"
+            " logged_at <= ? ORDER BY logged_at DESC LIMIT 1",
+            (pid, timestamp),
+        ).fetchone()
+        if log:
+          return (
+              float(log["post_latent_mmr"]),
+              float(log["post_rd"]),
+              float(log["post_accuracy_pct"]),
+              float(log["post_display_rating"]),
+          )
+        p = conn.execute(
+            "SELECT initial_rating FROM players WHERE player_id=?", (pid,)
+        ).fetchone()
+        return (
+            float(p["initial_rating"]),
+            350.0,
+            0.0,
+            float(p["initial_rating"]),
+        )
+
+      if t_matches:
+        for tm in t_matches:
+          st.write(
+              f"`{tm['match_time'][11:16]}` |"
+              f" {id_to_name[tm['team_a_p1_id']]} &"
+              f" {id_to_name.get(tm['team_a_p2_id'],'')}"
+              f" **[{tm['score_team_a']}-{tm['score_team_b']}]**"
+              f" {id_to_name[tm['team_b_p1_id']]} &"
+              f" {id_to_name.get(tm['team_b_p2_id'],'')}"
+          )
+        if st.button("🔬 Preview Asynchronous Deltas", type="secondary"):
+          st.markdown("##### 🔬 Time Machine Calculation")
+          for tm in t_matches:
+            ts = tm["match_time"]
+            mock_p1, mock_p3 = dict(p_meta[tm["team_a_p1_id"]]), dict(
+                p_meta[tm["team_b_p1_id"]]
+            )
+            (
+                mock_p1["latent_mmr"],
+                mock_p1["rating_deviation"],
+                _,
+                _,
+            ) = get_historical_state(tm["team_a_p1_id"], ts, conn)
+            (
+                mock_p3["latent_mmr"],
+                mock_p3["rating_deviation"],
+                _,
+                _,
+            ) = get_historical_state(tm["team_b_p1_id"], ts, conn)
+            mock_p2, mock_p4 = None, None
+            if not tm["is_singles"]:
+              mock_p2 = dict(p_meta[tm["team_a_p2_id"]])
+              (
+                  mock_p2["latent_mmr"],
+                  mock_p2["rating_deviation"],
+                  _,
+                  _,
+              ) = get_historical_state(tm["team_a_p2_id"], ts, conn)
+              mock_p4 = dict(p_meta[tm["team_b_p2_id"]])
+              (
+                  mock_p4["latent_mmr"],
+                  mock_p4["rating_deviation"],
+                  _,
+                  _,
+              ) = get_historical_state(tm["team_b_p2_id"], ts, conn)
+            out = RyftV16.compute_match(
+                mock_p1,
+                mock_p2,
+                mock_p3,
+                mock_p4,
+                tm["score_team_a"],
+                tm["score_team_b"],
+                tm["games_winner"],
+                tm["games_loser"],
+                tm["format_id"],
+                t_data["venue_id"],
+                bool(tm["is_singles"]),
+                is_dry=True,
+                is_tournament=True,
+                conn=conn,
+                match_timestamp=ts,
+            )
+            for r in out["res"]:
+              st.write(
+                  f"- **{r['name']}** (Past MMR: `{r['pre_r']:.3f}`) $\\rightarrow$"
+                  f" Earned $\\Delta R$: `{r['delta']:+.4f}`"
+              )
+
+        if st.button(
+            "🚀 COMMIT TOURNAMENT BATCH & ADDITIVE STACK", type="primary"
+        ):
+          ts_proc = datetime.now(timezone.utc).isoformat()
+          for tm in t_matches:
+            ts = tm["match_time"]
+            mock_p1, mock_p3 = dict(p_meta[tm["team_a_p1_id"]]), dict(
+                p_meta[tm["team_b_p1_id"]]
+            )
+            (
+                mock_p1["latent_mmr"],
+                mock_p1["rating_deviation"],
+                mock_p1["rating_accuracy_pct"],
+                mock_p1["display_rating"],
+            ) = get_historical_state(tm["team_a_p1_id"], ts, conn)
+            (
+                mock_p3["latent_mmr"],
+                mock_p3["rating_deviation"],
+                mock_p3["rating_accuracy_pct"],
+                mock_p3["display_rating"],
+            ) = get_historical_state(tm["team_b_p1_id"], ts, conn)
+            mock_p2, mock_p4 = None, None
+            if not tm["is_singles"]:
+              mock_p2 = dict(p_meta[tm["team_a_p2_id"]])
+              (
+                  mock_p2["latent_mmr"],
+                  mock_p2["rating_deviation"],
+                  mock_p2["rating_accuracy_pct"],
+                  mock_p2["display_rating"],
+              ) = get_historical_state(tm["team_a_p2_id"], ts, conn)
+              mock_p4 = dict(p_meta[tm["team_b_p2_id"]])
+              (
+                  mock_p4["latent_mmr"],
+                  mock_p4["rating_deviation"],
+                  mock_p4["rating_accuracy_pct"],
+                  mock_p4["display_rating"],
+              ) = get_historical_state(tm["team_b_p2_id"], ts, conn)
+
+            out = RyftV16.compute_match(
+                mock_p1,
+                mock_p2,
+                mock_p3,
+                mock_p4,
+                tm["score_team_a"],
+                tm["score_team_b"],
+                tm["games_winner"],
+                tm["games_loser"],
+                tm["format_id"],
+                t_data["venue_id"],
+                bool(tm["is_singles"]),
+                is_tournament=True,
+                conn=conn,
+                match_timestamp=ts,
+            )
+
+            m_id = f"M_TRNY_{tm['t_match_id']}_{uuid.uuid4().hex[:6]}"
+            all_guardrails = []
+            for pr in out["res"]:
+              all_guardrails.extend(pr["flags"])
+
+            conn.execute(
+                """
+                            INSERT INTO matches (
+                                match_id, venue_id, format_id, is_singles, is_tournament,
+                                is_venue_bridge, is_city_bridge, is_country_bridge,
+                                team_a_p1_id, team_a_p2_id, team_b_p1_id, team_b_p2_id,
+                                score_team_a, score_team_b, set_scores_json, games_winner, games_loser,
+                                pre_rating_a, pre_rating_b, win_expectancy_a, applied_m_c, applied_s_margin,
+                                delta_r_p1, delta_r_p2, delta_r_p3, delta_r_p4, guardrails_summary, is_retroactive, processed_at, match_timestamp
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                        """,
+                (
+                    m_id,
+                    t_data["venue_id"],
+                    tm["format_id"],
+                    tm["is_singles"],
+                    1,
+                    1 if out.get("is_venue_bridge") else 0,
+                    1 if out.get("is_city_bridge") else 0,
+                    1 if out.get("is_country_bridge") else 0,
+                    tm["team_a_p1_id"],
+                    tm["team_a_p2_id"],
+                    tm["team_b_p1_id"],
+                    tm["team_b_p2_id"],
+                    tm["score_team_a"],
+                    tm["score_team_b"],
+                    tm["games_winner"],
+                    tm["games_loser"],
+                    out["ta_r"],
+                    out["tb_r"],
+                    out["ea"],
+                    out["applied_m_c"],
+                    out["mov"],
+                    out["res"][0]["delta"],
+                    out["res"][2]["delta"] if not tm["is_singles"] else 0.0,
+                    out["res"][1]["delta"],
+                    out["res"][3]["delta"] if not tm["is_singles"] else 0.0,
+                    json.dumps(all_guardrails),
+                    ts_proc,
+                    ts,
+                ),
+            )
+
+            for pr in out["res"]:
+              pid, delta = pr["pid"], pr["delta"]
+              conn.execute(
+                  "UPDATE players SET latent_mmr = latent_mmr + ?,"
+                  " display_rating = display_rating + ?, tournament_floor ="
+                  " max(tournament_floor, latent_mmr + ?), rolling_90d_peak ="
+                  " max(rolling_90d_peak, latent_mmr + ?), rolling_180d_peak ="
+                  " max(rolling_180d_peak, latent_mmr + ?) WHERE player_id=?",
+                  (delta, delta, delta, delta, delta, pid),
+              )
+              conn.execute(
+                  "INSERT INTO match_logs (log_id, match_id, player_id,"
+                  " pre_latent_mmr, post_latent_mmr, pre_display_rating,"
+                  " post_display_rating, pre_rd, post_rd, pre_accuracy_pct,"
+                  " post_accuracy_pct, delta_r, is_retroactive,"
+                  " guardrails_triggered, logged_at) VALUES (?, ?, ?, ?, ?, ?,"
+                  " ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+                  (
+                      f"L_{pid}_{m_id}",
+                      m_id,
+                      pid,
+                      pr["pre_r"],
+                      pr["post_r"],
+                      pr["pre_disp"],
+                      pr["post_disp"],
+                      pr["pre_rd"],
+                      pr["post_rd"],
+                      pr["pre_acc"],
+                      pr["acc"],
+                      delta,
+                      json.dumps(pr["flags"]),
+                      ts,
+                  ),
+              )
+          conn.execute(
+              "UPDATE tournaments SET status='COMMITTED' WHERE tourney_id=?",
+              (t_id,),
+          )
+          conn.commit()
+          st.balloons()
+          st.success(
+              "✅ Tournament batch successfully committed! Deltas additively"
+              " stacked."
+          )
+          st.rerun()
   conn.close()
 
 elif nav == "📜 Historical Matches":
   st.title("Historical Matches & Deep Algorithmic Audit Ledger")
   conn = get_db_connection()
+
+  # --------------------------------------------------------------------------
+  # ADMINISTRATIVE & HAWKING MACRO SYNC AUDIT LEDGER
+  # --------------------------------------------------------------------------
+  with st.expander(
+      "🌐 Administrative & Hawking Macro Sync Audit Ledger", expanded=False
+  ):
+    st.caption(
+        "Audit log of all macro calibration adjustments pushed to player"
+        " accounts via Hawking sync events."
+    )
+    hwk_logs = conn.execute("""
+            SELECT ml.logged_at, p.display_name, p.is_provisional, l.location_name as city,
+                   ml.pre_latent_mmr, ml.post_latent_mmr, ml.delta_r, ml.pre_rd, ml.post_rd, ml.guardrails_triggered
+            FROM match_logs ml
+            JOIN players p ON ml.player_id = p.player_id
+            LEFT JOIN locations l ON p.home_city_id = l.location_id
+            WHERE ml.match_id = 'HAWKING_SYNC' OR ml.guardrails_triggered LIKE '%GLOBAL_HAWKING_SYNC%'
+            ORDER BY ml.logged_at DESC
+        """).fetchall()
+    if not hwk_logs:
+      st.info("No administrative macro sync events recorded yet.")
+    else:
+      hwk_list = []
+      for hl in hwk_logs:
+        hwk_list.append({
+            "Timestamp": hl["logged_at"][:19] if hl["logged_at"] else "",
+            "Player": format_pr_name(
+                hl["display_name"], hl["is_provisional"]
+            ),
+            "City": hl["city"] or "Unknown",
+            "Pre MMR": f"{hl['pre_latent_mmr']:.4f}",
+            "Post MMR": f"{hl['post_latent_mmr']:.4f}",
+            "Applied ΔR": f"{hl['delta_r']:+.4f}",
+            "RD": f"{hl['post_rd']:.1f}",
+            "Audit Tag": "GLOBAL_HAWKING_SYNC",
+        })
+      st.dataframe(pd.DataFrame(hwk_list), use_container_width=True)
+
+  st.markdown("---")
+
   c1, c2, c3, c4 = st.columns(4)
   c1.metric(
       "Total Matches",

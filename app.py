@@ -90,7 +90,7 @@ def init_db():
         cats = [("Beginner", 0.0, 0.999, 1, 1.0), ("Beginner+", 1.0, 1.999, 2, 1.0), ("Intermediate", 2.0, 3.499, 3, 1.0), ("Intermediate+", 3.5, 4.499, 4, 1.0), ("Advanced", 4.5, 5.499, 5, 1.0), ("Pro", 5.5, 6.299, 6, 1.0), ("Elite", 6.3, 7.0, 7, 1.0)]
         for cn, cmn, cmx, so, sm in cats: c.execute("INSERT OR IGNORE INTO rating_categories VALUES (?,?,?,?,?)", (cn, cmn, cmx, so, sm))
 
-    # All 18 Official V.16 Match Formats
+    # All 18 Official V.16 Formats
     official_formats = [
         ("STD_B03", "Best of 3 Sets", "MULTI_SET", 1.00, None, None, 0, 1),
         ("STD_B05", "Best of 5 Sets", "MULTI_SET", 1.00, None, None, 0, 1),
@@ -244,8 +244,36 @@ class RyftV16:
         conn.execute("UPDATE players SET verified_matches_count=?, unique_opponents_count=?, bridge_matches_count=?, is_active_bridge=?, is_country_bridge=?, all_time_badge=? WHERE player_id=?", (m_count, opp_count, cross_city_matches, is_act_city_bridge, is_act_ctry_bridge, cur_cat, player_id))
         if owns: conn.commit(); conn.close()
 
+    @staticmethod
+    def get_rolling_24h_exchange(player_id, current_ts_str, conn):
+        """Calculates net rating gained or lost across casual matches in the trailing 24 hours."""
+        if not current_ts_str or not conn:
+            return 0.0
+        try:
+            curr_dt = datetime.fromisoformat(current_ts_str.replace("Z", "+00:00"))
+        except Exception:
+            curr_dt = datetime.now(timezone.utc)
+            
+        rows = conn.execute("""
+            SELECT ml.delta_r, m.match_timestamp 
+            FROM match_logs ml
+            JOIN matches m ON ml.match_id = m.match_id
+            WHERE ml.player_id = ? AND m.is_tournament = 0
+        """, (player_id,)).fetchall()
+        
+        rolling_delta = 0.0
+        for r in rows:
+            try:
+                m_dt = datetime.fromisoformat(r["match_timestamp"].replace("Z", "+00:00"))
+                diff_sec = (curr_dt - m_dt).total_seconds()
+                if 0 <= diff_sec <= 86400.0:
+                    rolling_delta += float(r["delta_r"])
+            except Exception:
+                continue
+        return rolling_delta
+
     @classmethod
-    def compute_match(cls, p1_raw, p2_raw, p3_raw, p4_raw, s_a, s_b, g_w_raw, g_l_raw, fmt_id, v_id, is_singles, is_dry=False, is_tournament=False, session_id=None, session_checked_in=0, conn=None, cumulative_deltas=None):
+    def compute_match(cls, p1_raw, p2_raw, p3_raw, p4_raw, s_a, s_b, g_w_raw, g_l_raw, fmt_id, v_id, is_singles, is_dry=False, is_tournament=False, session_id=None, session_checked_in=0, conn=None, cumulative_deltas=None, match_timestamp=None):
         owns = False
         if not conn: conn = get_db_connection(); owns = True
 
@@ -280,6 +308,8 @@ class RyftV16:
         o_map = [cfg.get("COHORT_FACTOR_0_PROV", 1.0), cfg.get("COHORT_FACTOR_1_PROV", 0.75), cfg.get("COHORT_FACTOR_2_PROV", 0.50), cfg.get("COHORT_FACTOR_3_PROV", 0.25)]
         omega = o_map[min(3, max(0, prov_count - 1))]
 
+        effective_match_ts = match_timestamp or datetime.now(timezone.utc).isoformat()
+
         for p, is_a, partner, opp_rd in participants:
             flags = []
             r, rd, prov = float(p.get("latent_mmr", 3.0)), float(p.get("rating_deviation", 350.0)), bool(p.get("is_provisional", 1))
@@ -301,7 +331,7 @@ class RyftV16:
             
             g_opp = 1.0 / math.sqrt(1.0 + (3.0 * (q**2) * (opp_rd**2)) / (math.pi**2))
 
-            # Continuous Individual Volatility (Bit 7) & Continuous Linear Scale Compression / Elite Drag (Bit 8)
+            # Continuous Individual Volatility (Bit 7) & Scale Compression / Elite Drag (Bit 8)
             k_ind = cfg.get("K_MAX", 0.400) - (r / cfg.get("R_MAX", 7.000)) * (cfg.get("K_MAX", 0.400) - cfg.get("K_MIN", 0.080))
             _, _, _, cat_speed = cls.get_cat_for_rating(r, conn=conn)
             if cat_speed != 1.00:
@@ -397,15 +427,21 @@ class RyftV16:
             if w_g < 1.0 and not is_quar:
                 raw_d *= w_g; flags.append(f"[ALERT_DISCONNECTED_GRAPH_DAMPENING] ({w_g:.2f}x)")
 
+            # Stateful Rolling 24H Cumulative Exchange Cap (Bit 13)
             base_cap = cfg.get("SESSION_EXCHANGE_CAP", 0.300) if session_id and session_checked_in >= cfg.get("MIN_SESSION_PLAYERS", 6) else cfg.get("MAX_24H_EXCHANGE_CAP", 0.150)
-            cap = base_cap * (cfg.get("PROVISIONAL_CAP_MULTIPLIER", 2.5) if prov else 1.0)
+            cap_limit = base_cap * (cfg.get("PROVISIONAL_CAP_MULTIPLIER", 2.5) if prov else 1.0)
             
             # Gated Elevator Blowout Trigger for Placement Cap Bypass
             is_elevator_active = (
-                prov and won and (raw_d > cap) and
+                prov and won and (raw_d > cap_limit) and
                 (s_margin >= 1.00 or (g_w_raw >= 2 * g_l_raw and g_w_raw >= 4)) and
                 (opp_team_r >= r - 0.50)
             )
+
+            # Query historical 24h delta if outside a session, or blend with in-session cumulative deltas
+            prior_24h_exchange = cls.get_rolling_24h_exchange(p["player_id"], effective_match_ts, conn)
+            cum_session_delta = cumulative_deltas.get(p["player_id"], 0.0) if cumulative_deltas is not None else 0.0
+            total_prior_delta = prior_24h_exchange + cum_session_delta
 
             if is_elevator_active and bool(cfg.get("PROVISIONAL_BYPASS_EXCHANGE_CAP", 1)):
                 max_allowed = cfg.get("MAX_PROVISIONAL_DELTA", 0.750)
@@ -416,15 +452,25 @@ class RyftV16:
             elif is_tournament and bool(cfg.get("TOURNAMENT_MULTIPLIER_ACTIVE", 1)):
                 t_mult = cfg.get("TOURNAMENT_STAKES_MULTIPLIER", 1.15)
                 final_d = raw_d * t_mult; flags.append(f"TOURNAMENT ({t_mult}x, Uncapped)")
-            elif cumulative_deltas is not None:
-                cum_d = cumulative_deltas.get(p["player_id"], 0.0)
-                target_cum = cum_d + raw_d
-                capped_target = max(-cap, min(cap, target_cum))
-                final_d = capped_target - cum_d
-                if abs(target_cum) > cap: flags.append("SESSION_CUMULATIVE_CAP_ENFORCED")
             else:
-                final_d = max(-cap, min(cap, raw_d))
-                if abs(raw_d) > cap: flags.append("CAP_ENFORCED")
+                if raw_d >= 0.0:
+                    prior_gains = max(0.0, total_prior_delta)
+                    remaining_headroom = max(0.0, cap_limit - prior_gains)
+                    if raw_d > remaining_headroom:
+                        final_d = remaining_headroom
+                        flags.append("CAP_ENFORCED")
+                        flags.append("[ALERT_24H_EXCHANGE_CAP_CLAMPED]")
+                    else:
+                        final_d = raw_d
+                else:
+                    prior_losses = min(0.0, total_prior_delta)
+                    remaining_loss_room = min(0.0, -cap_limit - prior_losses)
+                    if raw_d < remaining_loss_room:
+                        final_d = remaining_loss_room
+                        flags.append("CAP_ENFORCED")
+                        flags.append("[ALERT_24H_EXCHANGE_CAP_CLAMPED]")
+                    else:
+                        final_d = raw_d
 
             new_r = max(0.000, min(6.999, r + final_d))
             c_loss = int(p.get("consecutive_losses", 0))
@@ -684,7 +730,6 @@ elif nav == "🎾 Log Matches":
     conn = get_db_connection()
     venues = conn.execute("SELECT * FROM venues WHERE is_active = 1").fetchall()
     players = conn.execute("SELECT * FROM players WHERE calibration_tier != 'INACTIVE' ORDER BY display_name").fetchall()
-    # Query all active match formats across all categories
     formats = conn.execute("SELECT * FROM match_formats WHERE is_active = 1 ORDER BY category, mc_weight DESC, target_games, total_points").fetchall()
     conn.close()
 
@@ -792,8 +837,13 @@ elif nav == "🎾 Log Matches":
             p2_obj = dict(p_dict[p2_pick]) if not is_singles else None
             p4_obj = dict(p_dict[p4_pick]) if not is_singles else None
             ven_obj = dict(v_dict[ven_sel])
+            match_ts_val = f"{match_date}T{match_time.strftime('%H:%M:%S')}Z"
 
-            sim_out = RyftV16.compute_match(p1_obj, p2_obj, p3_obj, p4_obj, sa, sb, max(gw, gl), min(gw, gl), sel_f["format_id"], ven_obj["venue_id"], is_singles, is_dry=do_dry, is_tournament=is_tourney)
+            sim_out = RyftV16.compute_match(
+                p1_obj, p2_obj, p3_obj, p4_obj, sa, sb, max(gw, gl), min(gw, gl),
+                sel_f["format_id"], ven_obj["venue_id"], is_singles,
+                is_dry=do_dry, is_tournament=is_tourney, match_timestamp=match_ts_val
+            )
             st.success(f"Match Executed! Team A Odds: {sim_out['ea']*100:.1f}% vs Team B: {(1-sim_out['ea'])*100:.1f}% | Margin: {sim_out['mov']:.4f}")
 
             res_cols = st.columns(2 if is_singles else 4)
@@ -817,7 +867,7 @@ elif nav == "🎾 Log Matches":
             if do_save:
                 conn = get_db_connection()
                 m_id = f"M_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                ts = f"{match_date}T{match_time.strftime('%H:%M:%S')}Z"
+                ts = match_ts_val
                 is_v_b = 1 if (p1_obj.get("home_venue_id") != ven_obj["venue_id"] and p1_obj.get("home_city_id") == ven_obj["city_id"]) else 0
                 is_c_b = 1 if (p1_obj.get("home_city_id") != ven_obj["city_id"] and p1_obj.get("home_country_code") == ven_obj["country_code"]) else 0
                 is_co_b = 1 if (p1_obj.get("home_country_code") != ven_obj["country_code"]) else 0
@@ -1093,7 +1143,8 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
                                     max(m["games_winner"], m["score_team_a"]), min(m["games_loser"], m["score_team_b"]),
                                     s_data["format_id"], s_data["venue_id"], is_singles=(s_data["match_mode"]=="SINGLES"),
                                     session_id=s_id, session_checked_in=s_data["active_checked_in_count"], 
-                                    is_tournament=bool(s_data.get("is_tournament", 0)), is_dry=True, conn=conn, cumulative_deltas=cum_deltas
+                                    is_tournament=bool(s_data.get("is_tournament", 0)), is_dry=True, conn=conn, cumulative_deltas=cum_deltas,
+                                    match_timestamp=s_data.get("created_at")
                                 )
                                 
                                 res_cols = st.columns(2 if (s_data["match_mode"]=="SINGLES") else 4)
@@ -1239,7 +1290,8 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
                             max(sm["games_winner"], sm["score_team_a"]), min(sm["games_loser"], sm["score_team_b"]),
                             s_data["format_id"], s_data["venue_id"], is_singles=is_sing,
                             session_id=s_id, session_checked_in=s_data["active_checked_in_count"], 
-                            is_tournament=bool(s_data.get("is_tournament", 0)), is_dry=True, conn=conn, cumulative_deltas=cumulative_deltas
+                            is_tournament=bool(s_data.get("is_tournament", 0)), is_dry=True, conn=conn, cumulative_deltas=cumulative_deltas,
+                            match_timestamp=s_data.get("created_at")
                         )
                         for pr in out["res"]:
                             temp_ratings[pr["pid"]]["latent_mmr"] = pr["post_r"]
@@ -1294,7 +1346,8 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
                                 max(sm["games_winner"], sm["score_team_a"]), min(sm["games_loser"], sm["score_team_b"]),
                                 s_data["format_id"], s_data["venue_id"], is_singles=is_sing,
                                 session_id=s_id, session_checked_in=s_data["active_checked_in_count"],
-                                is_tournament=bool(s_data.get("is_tournament", 0)), conn=conn, cumulative_deltas=cumulative_deltas
+                                is_tournament=bool(s_data.get("is_tournament", 0)), conn=conn, cumulative_deltas=cumulative_deltas,
+                                match_timestamp=ts
                             )
 
                             m_id = f"M_SESS_{sm['session_match_id']}"
@@ -1320,7 +1373,7 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
                                 sm["score_team_a"], sm["score_team_b"], sm["set_scores_json"], max(sm["games_winner"], sm["score_team_a"]), min(sm["games_loser"], sm["score_team_b"]),
                                 out["ta_r"], out["tb_r"], out["ea"], out["applied_m_c"], out["mov"],
                                 out["res"][0]["delta"], out["res"][2]["delta"] if not is_sing else 0.0,
-                                out["res"][1]["delta"], out["res"][3]["delta"] if not is_singles else 0.0, json.dumps(all_guardrails), ts))
+                                out["res"][1]["delta"], out["res"][3]["delta"] if not is_sing else 0.0, json.dumps(all_guardrails), ts))
 
                             for pr in out["res"]:
                                 conn.execute("""UPDATE players SET latent_mmr=?, display_rating=?, rating_deviation=?, rating_accuracy_pct=?, calibration_tier=?, is_provisional=?, consecutive_losses=?, rolling_90d_peak=max(rolling_90d_peak, ?), rolling_180d_peak=max(rolling_180d_peak, ?), rolling_365d_peak=max(rolling_365d_peak, ?), last_match_time=? WHERE player_id=?""",
@@ -1468,7 +1521,7 @@ elif nav == "🏆 Tournament Desk (Delayed)":
                             mock_p2["latent_mmr"], mock_p2["rating_deviation"], _, _ = get_historical_state(tm["team_a_p2_id"], ts, conn)
                             mock_p4 = dict(p_meta[tm["team_b_p2_id"]])
                             mock_p4["latent_mmr"], mock_p4["rating_deviation"], _, _ = get_historical_state(tm["team_b_p2_id"], ts, conn)
-                        out = RyftV16.compute_match(mock_p1, mock_p2, mock_p3, mock_p4, tm["score_team_a"], tm["score_team_b"], tm["games_winner"], tm["games_loser"], tm["format_id"], t_data["venue_id"], bool(tm["is_singles"]), is_dry=True, is_tournament=True, conn=conn)
+                        out = RyftV16.compute_match(mock_p1, mock_p2, mock_p3, mock_p4, tm["score_team_a"], tm["score_team_b"], tm["games_winner"], tm["games_loser"], tm["format_id"], t_data["venue_id"], bool(tm["is_singles"]), is_dry=True, is_tournament=True, conn=conn, match_timestamp=ts)
                         for r in out["res"]: st.write(f"- **{r['name']}** (Past MMR: `{r['pre_r']:.3f}`) $\\rightarrow$ Earned $\\Delta R$: `{r['delta']:+.4f}`")
 
                 if st.button("🚀 COMMIT TOURNAMENT BATCH & ADDITIVE STACK", type="primary"):
@@ -1485,7 +1538,7 @@ elif nav == "🏆 Tournament Desk (Delayed)":
                             mock_p4 = dict(p_meta[tm["team_b_p2_id"]])
                             mock_p4["latent_mmr"], mock_p4["rating_deviation"], mock_p4["rating_accuracy_pct"], mock_p4["display_rating"] = get_historical_state(tm["team_b_p2_id"], ts, conn)
                         
-                        out = RyftV16.compute_match(mock_p1, mock_p2, mock_p3, mock_p4, tm["score_team_a"], tm["score_team_b"], tm["games_winner"], tm["games_loser"], tm["format_id"], t_data["venue_id"], bool(tm["is_singles"]), is_tournament=True, conn=conn)
+                        out = RyftV16.compute_match(mock_p1, mock_p2, mock_p3, mock_p4, tm["score_team_a"], tm["score_team_b"], tm["games_winner"], tm["games_loser"], tm["format_id"], t_data["venue_id"], bool(tm["is_singles"]), is_tournament=True, conn=conn, match_timestamp=ts)
 
                         m_id = f"M_TRNY_{tm['t_match_id']}"
                         all_guardrails = []
@@ -1700,7 +1753,7 @@ elif nav == "🏢 Venues & Regions":
 
     with ba2.expander("➕ Add City", expanded=False):
         ci_name = st.text_input("City Name", key="ac_name")
-        countries = conn.execute("SELECT location_id, location_name, country_code FROM locations WHERE location_type = 'COUNTRY'").fetchall()
+        countries = conn.execute("SELECT location_id, location_name FROM locations WHERE location_type = 'COUNTRY' AND is_active = 1").fetchall()
         co_map = {c["location_name"]: c for c in countries}
         co_parent = st.selectbox("Parent Country", list(co_map.keys()) if co_map else ["None"], key="ac_parent")
         if st.button("Register City", type="primary"):

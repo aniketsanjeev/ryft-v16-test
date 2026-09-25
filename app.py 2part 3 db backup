@@ -85,6 +85,7 @@ def restore_db_from_bytes(uploaded_bytes):
     source.close()
     os.remove(temp_in)
     raise ValueError("Invalid RYFT database snapshot.")
+  source.execute("PRAGMA wal_checkpoint(TRUNCATE);")
   dest = get_db_connection()
   dest.execute("PRAGMA wal_checkpoint(TRUNCATE);")
   source.backup(dest)
@@ -380,7 +381,6 @@ def init_db():
       c, "locations", "intransitivity_index", "REAL DEFAULT 0.0"
   )
 
-  # Seed Default Synthetic Ghosts if empty
   g_count = c.execute("SELECT COUNT(*) FROM synthetic_ghosts").fetchone()[0]
   if g_count == 0:
     default_ghosts = [
@@ -434,7 +434,6 @@ def init_db():
           (cn, cmn, cmx, so, sm),
       )
 
-  # All 20 Official Match Formats
   official_formats = [
       ("STD_B03", "Best of 3 Sets", "MULTI_SET", 1.00, None, None, 0, 1),
       ("STD_B05", "Best of 5 Sets", "MULTI_SET", 1.00, None, None, 0, 1),
@@ -1863,7 +1862,6 @@ class RyftV16:
           else 0.0
       )
 
-      # EVALUATION ROUTING: QUARANTINE vs. DRAW vs. WIN vs. LOSS
       if is_quar:
         raw_d = 0.000
         flags.append("[ALERT_QUARANTINE_ISOLATION_ACTIVE]")
@@ -1933,7 +1931,6 @@ class RyftV16:
         else:
           raw_d = min(0.0000, standard_einstein_delta)
 
-      # Partner Disparity Dampening
       if not is_singles and partner and not is_quar and not is_draw:
         gap = abs(r - float(partner.get("latent_mmr", 3.0)))
         part_prov = bool(partner.get("is_provisional", 1))
@@ -2658,49 +2655,49 @@ if nav == "📊 The Dashboard":
   st.title("System Command Center & Macro Health")
   conn = get_db_connection()
   m1, m2, m3, m4, m5, m6 = st.columns(6)
-  m1.metric(
-      "Active Players",
-      conn.execute(
-          "SELECT COUNT(*) FROM players WHERE calibration_tier != 'INACTIVE'"
-      ).fetchone()[0],
-  )
-  m2.metric(
-      "Matches", conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0]
-  )
-  m3.metric(
-      "Sessions", conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
-  )
-  m4.metric(
-      "Venues",
-      conn.execute("SELECT COUNT(*) FROM venues WHERE is_active = 1").fetchone()[
-          0
-      ],
-  )
-  m5.metric(
-      "Cities",
-      conn.execute(
-          "SELECT COUNT(*) FROM locations WHERE location_type = 'CITY'"
-      ).fetchone()[0],
-  )
-  m6.metric(
-      "Countries",
-      conn.execute(
-          "SELECT COUNT(*) FROM locations WHERE location_type = 'COUNTRY'"
-      ).fetchone()[0],
-  )
+  n_players = conn.execute(
+      "SELECT COUNT(*) FROM players WHERE calibration_tier != 'INACTIVE'"
+  ).fetchone()[0]
+  n_matches = conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0]
+  n_sessions = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+  n_venues = conn.execute(
+      "SELECT COUNT(*) FROM venues WHERE is_active = 1"
+  ).fetchone()[0]
+  n_cities = conn.execute(
+      "SELECT COUNT(*) FROM locations WHERE location_type = 'CITY'"
+  ).fetchone()[0]
+  n_countries = conn.execute(
+      "SELECT COUNT(*) FROM locations WHERE location_type = 'COUNTRY'"
+  ).fetchone()[0]
+
+  m1.metric("Active Players", n_players)
+  m2.metric("Matches", n_matches)
+  m3.metric("Sessions", n_sessions)
+  m4.metric("Venues", n_venues)
+  m5.metric("Cities", n_cities)
+  m6.metric("Countries", n_countries)
   conn.close()
   st.markdown("---")
+
+  # HARDENED SNAPSHOT SYSTEM BACKUP & RESTORE
   with st.expander("💾 Database Snapshot Backup & Restore", expanded=True):
+    st.info(
+        "🛡️ **System-Wide Full State Fidelity:** Snapshot captures all 13"
+        " tables (Players, Venues, Locations, Matches, Match Logs, Hawking"
+        " States, Configs, Formats, and Ghosts). WAL write-ahead buffers are"
+        " flushed prior to export."
+    )
     col_b1, col_b2 = st.columns(2)
     with col_b1:
       st.markdown("#### 📥 Backup Database Snapshot")
+      st.caption("Download an exact bit-for-bit SQLite replica.")
       if os.path.exists(DB_FILE):
         try:
           st.download_button(
-              "⬇️ Download System Snapshot (.db)",
+              "⬇️ Download Full System Snapshot (.db)",
               data=export_db_bytes(),
               file_name=(
-                  f"RYFT_V16_Backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+                  f"RYFT_V16_FullBackup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
               ),
               mime="application/x-sqlite3",
               use_container_width=True,
@@ -2708,19 +2705,23 @@ if nav == "📊 The Dashboard":
         except Exception as ex:
           st.error(f"Error preparing snapshot: {ex}")
     with col_b2:
-      st.markdown("#### 📤 Upload Saved State")
+      st.markdown("#### 📤 Restore Saved State")
+      st.caption("Replace current database with an existing snapshot.")
       up_db = st.file_uploader(
           "Select .db file", type=["db", "sqlite", "sqlite3"]
       )
       if up_db and st.button(
-          "🚨 Restore Entire System", type="primary", use_container_width=True
+          "🚨 Restore Entire System from File",
+          type="primary",
+          use_container_width=True,
       ):
         try:
           restore_db_from_bytes(up_db.getbuffer())
-          st.success("✅ System Restored!")
+          st.success("✅ System State Successfully Restored!")
           st.rerun()
         except Exception as err:
           st.error(f"Failed to restore database: {str(err)}")
+
   with st.expander("🚨 Advanced System Resets", expanded=False):
     r_c1, r_c2, r_c3 = st.columns(3)
     res_p = r_c1.checkbox("Reset All Players to Initial Rating")
@@ -2740,12 +2741,12 @@ if nav == "📊 The Dashboard":
             "players",
             "venues",
             "locations",
-            "progression_speed_rules",
-            "config_changelog",
-            "player_changelog",
+            "synthetic_ghosts",
+            "global_config",
         ]:
           conn.execute(f"DELETE FROM {tbl};")
-        st.warning("Database completely wiped.")
+        seed_factory_parameters(conn.cursor(), overwrite_existing=True)
+        st.warning("Database completely wiped & factory defaults restored.")
       else:
         if res_m:
           conn.execute("DELETE FROM match_logs;")
@@ -3012,7 +3013,6 @@ elif nav == "🎾 Log Matches":
           if pr["flags"]:
             st.caption("⚡ " + " | ".join(pr["flags"]))
 
-      # HARDENED COMMIT BLOCK FOR STANDALONE MATCH LOGGER
       if do_save:
         conn = get_db_connection()
         try:
@@ -4931,42 +4931,179 @@ elif nav == "📜 Historical Matches":
   conn = get_db_connection()
 
   # --------------------------------------------------------------------------
-  # ADMINISTRATIVE & HAWKING MACRO SYNC AUDIT LEDGER
+  # GRANULAR ADMINISTRATIVE & HAWKING MACRO SYNC AUDIT LEDGER
   # --------------------------------------------------------------------------
   with st.expander(
       "🌐 Administrative & Hawking Macro Sync Audit Ledger", expanded=False
   ):
     st.caption(
-        "Audit log of all macro calibration adjustments pushed to player"
-        " accounts via Hawking sync events."
+        "Audit trail of macro calibration shifts deployed across regional"
+        " clusters. Review shifts per run, by territory, or by date."
     )
-    hwk_logs = conn.execute("""
-            SELECT ml.logged_at, p.display_name, p.is_provisional, l.location_name as city,
+
+    h_countries = conn.execute("""
+            SELECT DISTINCT c.country_code, c.location_name 
+            FROM locations c 
+            JOIN locations ci ON ci.parent_id = c.location_id
+            JOIN players p ON p.home_city_id = ci.location_id
+            JOIN match_logs ml ON ml.player_id = p.player_id
+            WHERE ml.match_id = 'HAWKING_SYNC' OR ml.match_id LIKE 'HAWKING_%' OR ml.guardrails_triggered LIKE '%GLOBAL_HAWKING_SYNC%'
+            ORDER BY c.location_name
+        """).fetchall()
+
+    h_cities = conn.execute("""
+            SELECT DISTINCT ci.location_id, ci.location_name 
+            FROM locations ci 
+            JOIN players p ON p.home_city_id = ci.location_id
+            JOIN match_logs ml ON ml.player_id = p.player_id
+            WHERE ml.match_id = 'HAWKING_SYNC' OR ml.match_id LIKE 'HAWKING_%' OR ml.guardrails_triggered LIKE '%GLOBAL_HAWKING_SYNC%'
+            ORDER BY ci.location_name
+        """).fetchall()
+
+    f_h1, f_h2, f_h3, f_h4 = st.columns(4)
+    sel_h_co = f_h1.selectbox(
+        "Filter by Country",
+        ["-- All Countries --"] + [c["location_name"] for c in h_countries],
+        key="flt_h_co",
+    )
+    sel_h_ci = f_h2.selectbox(
+        "Filter by City",
+        ["-- All Cities --"] + [c["location_name"] for c in h_cities],
+        key="flt_h_ci",
+    )
+    sel_h_date = f_h3.date_input(
+        "Filter by Date", value=None, key="flt_h_date"
+    )
+    sel_h_view = f_h4.radio(
+        "Ledger View Mode",
+        ["Grouped by Sync Run", "Full Detail Table"],
+        horizontal=True,
+        key="flt_h_view",
+    )
+
+    h_sql = """
+            SELECT ml.log_id, ml.match_id, ml.logged_at, ml.player_id, p.display_name, p.is_provisional,
+                   ci.location_name as city, co.location_name as country,
                    ml.pre_latent_mmr, ml.post_latent_mmr, ml.delta_r, ml.pre_rd, ml.post_rd, ml.guardrails_triggered
             FROM match_logs ml
             JOIN players p ON ml.player_id = p.player_id
-            LEFT JOIN locations l ON p.home_city_id = l.location_id
-            WHERE ml.match_id = 'HAWKING_SYNC' OR ml.guardrails_triggered LIKE '%GLOBAL_HAWKING_SYNC%'
-            ORDER BY ml.logged_at DESC
-        """).fetchall()
-    if not hwk_logs:
-      st.info("No administrative macro sync events recorded yet.")
+            LEFT JOIN locations ci ON p.home_city_id = ci.location_id
+            LEFT JOIN locations co ON ci.parent_id = co.location_id
+            WHERE (ml.match_id = 'HAWKING_SYNC' OR ml.match_id LIKE 'HAWKING_%' OR ml.guardrails_triggered LIKE '%GLOBAL_HAWKING_SYNC%')
+        """
+    h_params = []
+    if sel_h_co != "-- All Countries --":
+      h_sql += " AND co.location_name = ?"
+      h_params.append(sel_h_co)
+    if sel_h_ci != "-- All Cities --":
+      h_sql += " AND ci.location_name = ?"
+      h_params.append(sel_h_ci)
+    if sel_h_date:
+      h_sql += " AND date(ml.logged_at) = ?"
+      h_params.append(str(sel_h_date))
+
+    h_sql += " ORDER BY ml.logged_at DESC, ml.log_id DESC"
+    raw_h_logs = conn.execute(h_sql, h_params).fetchall()
+
+    if not raw_h_logs:
+      st.info("No matching administrative Hawking sync events found.")
     else:
-      hwk_list = []
-      for hl in hwk_logs:
-        hwk_list.append({
-            "Timestamp": hl["logged_at"][:19] if hl["logged_at"] else "",
-            "Player": format_pr_name(
-                hl["display_name"], hl["is_provisional"]
+      if sel_h_view == "Grouped by Sync Run":
+        runs = {}
+        for row in raw_h_logs:
+          run_key = row["match_id"]
+          if run_key == "HAWKING_SYNC":
+            run_key = f"RUN_{row['city']}_{row['logged_at'][:16]}"
+          if run_key not in runs:
+            runs[run_key] = {
+                "key": run_key,
+                "city": row["city"] or "Unknown",
+                "country": row["country"] or "Unknown",
+                "timestamp": row["logged_at"],
+                "records": [],
+            }
+          runs[run_key]["records"].append(row)
+
+        st.markdown(f"#### 📦 Identified Sync Runs ({len(runs)} Batches)")
+        for rk, rdata in runs.items():
+          recs = rdata["records"]
+          tot_delta = sum(float(r["delta_r"]) for r in recs)
+          active_shifted = sum(1 for r in recs if float(r["delta_r"]) != 0.0)
+          firewalled = sum(1 for r in recs if float(r["delta_r"]) == 0.0)
+
+          with st.expander(
+              f"📅 {rdata['timestamp'][:19]} | 🏙️ {rdata['city']},"
+              f" {rdata['country']} — {active_shifted} Shifted ({firewalled}"
+              f" Firewalled) | Net Shift: {tot_delta:+.4f}"
+          ):
+            m_c1, m_c2, m_c3, m_c4 = st.columns(4)
+            m_c1.metric("Run Identifier", rk[:22])
+            m_c2.metric("Target City", rdata["city"])
+            m_c3.metric("Adjusted Roster Count", len(recs))
+            m_c4.metric("Net Batch ΔR", f"{tot_delta:+.4f}")
+
+            run_table = []
+            for r in recs:
+              delta_val = float(r["delta_r"])
+              rd_val = float(r["post_rd"])
+              rule = (
+                  "Provisional Firewall (0.0000)"
+                  if delta_val == 0.0 and rd_val > 100.0
+                  else (
+                      "Jacobian Elasticity"
+                      if float(r["pre_latent_mmr"]) > 4.5
+                      else "Affine Scaling"
+                  )
+              )
+              run_table.append({
+                  "Player": format_pr_name(
+                      r["display_name"], r["is_provisional"]
+                  ),
+                  "Pre MMR": f"{r['pre_latent_mmr']:.4f}",
+                  "Applied ΔR": f"{delta_val:+.4f}",
+                  "Post MMR": f"{r['post_latent_mmr']:.4f}",
+                  "RD": f"{rd_val:.1f}",
+                  "Bit 22 Guardrail": rule,
+              })
+            st.dataframe(pd.DataFrame(run_table), use_container_width=True)
+
+      else:
+        st.markdown(
+            f"#### 📋 All Individual Player Adjustments ({len(raw_h_logs)}"
+            " records)"
+        )
+        flat_data = []
+        for r in raw_h_logs:
+          delta_val = float(r["delta_r"])
+          flat_data.append({
+              "Timestamp": r["logged_at"][:19] if r["logged_at"] else "",
+              "Country": r["country"] or "Unknown",
+              "City": r["city"] or "Unknown",
+              "Player": format_pr_name(
+                  r["display_name"], r["is_provisional"]
+              ),
+              "Pre MMR": f"{r['pre_latent_mmr']:.4f}",
+              "Applied ΔR": f"{delta_val:+.4f}",
+              "Post MMR": f"{r['post_latent_mmr']:.4f}",
+              "Pre RD": f"{r['pre_rd']:.1f}",
+              "Post RD": f"{r['post_rd']:.1f}",
+              "Rule Applied": (
+                  "Provisional Firewall"
+                  if delta_val == 0.0 and float(r["post_rd"]) > 100.0
+                  else "Affine / Jacobian Scaling"
+              ),
+              "Match / Batch ID": r["match_id"],
+          })
+        df_flat = pd.DataFrame(flat_data)
+        st.dataframe(df_flat, use_container_width=True)
+        st.download_button(
+            "⬇️ Export Filtered Hawking Ledger (CSV)",
+            data=df_flat.to_csv(index=False),
+            file_name=(
+                f"Hawking_Audit_Export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
             ),
-            "City": hl["city"] or "Unknown",
-            "Pre MMR": f"{hl['pre_latent_mmr']:.4f}",
-            "Post MMR": f"{hl['post_latent_mmr']:.4f}",
-            "Applied ΔR": f"{hl['delta_r']:+.4f}",
-            "RD": f"{hl['post_rd']:.1f}",
-            "Audit Tag": "GLOBAL_HAWKING_SYNC",
-        })
-      st.dataframe(pd.DataFrame(hwk_list), use_container_width=True)
+            mime="text/csv",
+        )
 
   st.markdown("---")
 
@@ -6074,6 +6211,10 @@ elif nav == "🌐 Hawking Engine":
                       key=f"btn_{cid}",
                   ):
                     try:
+                      ts_now = datetime.now()
+                      ts_str = ts_now.strftime("%Y%m%d_%H%M%S")
+                      sync_batch_id = f"HAWKING_{cid}_{ts_str}"
+
                       for p in affected:
                         delta = calculate_hawking_player_delta(
                             float(p["latent_mmr"]),
@@ -6101,17 +6242,18 @@ elif nav == "🌐 Hawking Engine":
                               ),
                           )
 
-                          log_id = f"L_HAWKING_{p['player_id']}_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:4]}"
+                          log_id = f"L_{p['player_id']}_{sync_batch_id}_{uuid.uuid4().hex[:4]}"
                           conn.execute(
                               """
                                                     INSERT INTO match_logs (
                                                         log_id, match_id, player_id, pre_latent_mmr, post_latent_mmr,
                                                         pre_display_rating, post_display_rating, pre_rd, post_rd,
                                                         pre_accuracy_pct, post_accuracy_pct, delta_r, guardrails_triggered, logged_at
-                                                    ) VALUES (?, 'HAWKING_SYNC', ?, ?, ?, ?, ?, ?, ?, 0.0, 0.0, ?, ?, CURRENT_TIMESTAMP)
+                                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0.0, 0.0, ?, ?, CURRENT_TIMESTAMP)
                                                 """,
                               (
                                   log_id,
+                                  sync_batch_id,
                                   p["player_id"],
                                   p["latent_mmr"],
                                   p["latent_mmr"] + delta,

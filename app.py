@@ -211,69 +211,70 @@ def init_db():
       c, "locations", "intransitivity_index", "REAL DEFAULT 0.0"
   )
 
-  # SEED 6 OFFICIAL RYFT CATEGORY BENCHMARK GHOSTS
-  g_count = c.execute("SELECT COUNT(*) FROM synthetic_ghosts").fetchone()[0]
-  if g_count == 0:
-    default_ghosts = [
-        (
-            "GHOST_BEG_PLUS_15",
-            "Ghost Beginner+ 1.5",
-            "BALANCED",
-            1.5000,
-            "NATIONAL",
-            1,
-            0,
-        ),
-        (
-            "GHOST_INT_25",
-            "Ghost Intermediate 2.5",
-            "BALANCED",
-            2.5000,
-            "NATIONAL",
-            1,
-            0,
-        ),
-        (
-            "GHOST_INT_PLUS_35",
-            "Ghost Intermediate+ 3.5",
-            "BALANCED",
-            3.5000,
-            "NATIONAL",
-            1,
-            0,
-        ),
-        (
-            "GHOST_ADV_45",
-            "Ghost Advanced 4.5",
-            "BALANCED",
-            4.5000,
-            "NATIONAL",
-            1,
-            0,
-        ),
-        (
-            "GHOST_PRO_55",
-            "Ghost Pro 5.5",
-            "BALANCED",
-            5.5000,
-            "NATIONAL",
-            1,
-            0,
-        ),
-        (
-            "GHOST_ELITE_65",
-            "Ghost Elite 6.5",
-            "BALANCED",
-            6.5000,
-            "NATIONAL",
-            1,
-            0,
-        ),
-    ]
-    c.executemany(
-        """INSERT INTO synthetic_ghosts (ghost_id, ghost_name, playstyle, assigned_mmr, target_city, is_active, sims_run_count) 
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        default_ghosts,
+  # UPSERT 6 OFFICIAL RYFT CATEGORY BENCHMARK GHOSTS
+  default_ghosts = [
+      (
+          "GHOST_BEG_PLUS_15",
+          "Ghost Beginner+ 1.5",
+          "BALANCED",
+          1.5000,
+          "NATIONAL",
+          1,
+          0,
+      ),
+      (
+          "GHOST_INT_25",
+          "Ghost Intermediate 2.5",
+          "BALANCED",
+          2.5000,
+          "NATIONAL",
+          1,
+          0,
+      ),
+      (
+          "GHOST_INT_PLUS_35",
+          "Ghost Intermediate+ 3.5",
+          "BALANCED",
+          3.5000,
+          "NATIONAL",
+          1,
+          0,
+      ),
+      (
+          "GHOST_ADV_45",
+          "Ghost Advanced 4.5",
+          "BALANCED",
+          4.5000,
+          "NATIONAL",
+          1,
+          0,
+      ),
+      (
+          "GHOST_PRO_55",
+          "Ghost Pro 5.5",
+          "BALANCED",
+          5.5000,
+          "NATIONAL",
+          1,
+          0,
+      ),
+      (
+          "GHOST_ELITE_65",
+          "Ghost Elite 6.5",
+          "BALANCED",
+          6.5000,
+          "NATIONAL",
+          1,
+          0,
+      ),
+  ]
+  for gid, gname, gstyle, gmmr, gcity, gact, gsims in default_ghosts:
+    c.execute(
+        """INSERT INTO synthetic_ghosts (ghost_id, ghost_name, playstyle, assigned_mmr, target_city, is_active, sims_run_count)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(ghost_id) DO UPDATE SET 
+               ghost_name=excluded.ghost_name, playstyle=excluded.playstyle, assigned_mmr=excluded.assigned_mmr""",
+        (gid, gname, gstyle, gmmr, gcity, gact, gsims),
     )
 
   if c.execute("SELECT COUNT(*) FROM rating_categories").fetchone()[0] == 0:
@@ -3146,8 +3147,8 @@ if nav == "🗓️ Club Sessions & Mixers":
 elif nav == "🧠 Session Logic (V16.2 PROD)":
   st.title("Session Logic Engine (V16.2 PROD)")
   st.caption(
-      "Multi-stage atomic scheduling, Mexicano phase-gating, and true"
-      " chronological evaluation."
+      "Multi-stage atomic scheduling, Americano cycles, sit-out management, and"
+      " Mexicano phase-gating."
   )
 
   conn = get_db_connection()
@@ -3173,7 +3174,7 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
   if mode == "➕ Create Session":
     st.subheader("1. Session Gateway")
     cs1, cs2 = st.columns(2)
-    s_title = cs1.text_input("Session Title", value="Pro-Am Round Robin")
+    s_title = cs1.text_input("Session Title", value="Pro-Am Americano Session")
     s_ven = cs2.selectbox(
         "Hosting Venue", list(v_dict.keys()) if v_dict else ["None"]
     )
@@ -3190,24 +3191,10 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
 
     avail_courts = v_dict[s_ven]["court_count"] if s_ven in v_dict else 1
     all_court_labels = [f"Court {i+1}" for i in range(avail_courts)]
-    overlap_sessions = conn.execute(
-        "SELECT session_title, court_ids_json, start_time, end_time FROM"
-        " sessions WHERE venue_id = ? AND session_date = ? AND session_status"
-        " != 'CANCELLED'",
-        (v_dict[s_ven]["venue_id"] if s_ven in v_dict else "", s_date_str),
-    ).fetchall()
-    booked_courts = set()
-    for osess in overlap_sessions:
-      if s_start_str < osess["end_time"] and s_end_str > osess["start_time"]:
-        booked_courts.update(json.loads(osess["court_ids_json"]))
-
-    available_court_picks = [
-        c for c in all_court_labels if c not in booked_courts
-    ]
     court_picks = st.multiselect(
         "Select Dedicated Courts",
-        available_court_picks,
-        default=available_court_picks[: min(2, len(available_court_picks))],
+        all_court_labels,
+        default=all_court_labels[: min(2, len(all_court_labels))],
     )
 
     st.markdown("#### Configuration")
@@ -3223,25 +3210,10 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
         "🏆 Official Tournament Session", value=False
     )
 
-    if s_team == "ROTATING_TEAMS":
-      compat_formats = conn.execute("""
-                SELECT format_id, format_name, category FROM match_formats 
-                WHERE category IN ('AMERICANO', 'MEXICANO', 'RACE_GAMES') AND is_active = 1 
-                ORDER BY category, format_name
-            """).fetchall()
-    elif s_team == "FIXED_TEAMS":
-      compat_formats = conn.execute("""
-                SELECT format_id, format_name, category FROM match_formats 
-                WHERE category IN ('MULTI_SET', 'RACE_GAMES') AND is_active = 1 
-                ORDER BY category, format_name
-            """).fetchall()
-    else:
-      compat_formats = conn.execute("""
-                SELECT format_id, format_name, category FROM match_formats 
-                WHERE category IN ('RACE_GAMES', 'MULTI_SET') AND is_active = 1 
-                ORDER BY category, format_name
-            """).fetchall()
-
+    compat_formats = conn.execute("""
+            SELECT format_id, format_name, category FROM match_formats 
+            WHERE is_active = 1 ORDER BY category, format_name
+        """).fetchall()
     f_compat_dict = {f["format_name"]: dict(f) for f in compat_formats}
     s_fmt_name = st.selectbox(
         "Scoring Ruleset",
@@ -3551,7 +3523,6 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
         ).fetchall()
         tot_rounds = s_data.get("total_rounds", 1)
 
-        # ROUND SELECTOR
         r_tabs = [f"Round {r}" for r in range(1, tot_rounds + 1)] + [
             "All Rounds"
         ]
@@ -3575,7 +3546,6 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
             or m["round_number"] == active_round_filter
         ]
 
-        # RENDER PER-ROUND SECTIONS
         distinct_rounds = sorted(
             list(set(m["round_number"] for m in display_fixtures))
         )
@@ -3584,7 +3554,6 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
               m for m in display_fixtures if m["round_number"] == r_num
           ]
 
-          # SIT-OUT / BYE BANNER
           active_in_round = set()
           for rm in r_matches:
             for p_key in [
@@ -5044,6 +5013,9 @@ elif nav == "🏢 Venues & Regions":
         )
   conn.close()
 
+# ==============================================================================
+# 🌐 TAB: HAWKING MACRO ENGINE & REGIONAL NORMALIZATION (V2 COMPLETE)
+# ==============================================================================
 elif nav == "🌐 Hawking Engine":
   st.title("🌐 Hawking Macro Normalization & Regional Diffusion")
   st.caption(
@@ -5552,71 +5524,205 @@ elif nav == "🌐 Hawking Engine":
             help="Estimated skill gap between the two pools.",
         )
 
+  # --------------------------------------------------------------------------
+  # UPGRADED SUB-TAB 3: GRANULAR SYNTHETIC GHOST SANDBOX
+  # --------------------------------------------------------------------------
   with h_tab3:
-    st.subheader("Ensemble AI Ghost Benchmark Directory")
+    st.subheader("👻 Granular Synthetic Ghost Sandbox & Benchmark Ensemble")
     st.caption(
-        "Manage synthetic bot profiles and evaluate municipal performance"
-        " residuals."
+        "Evaluate regional skill calibration against standardized AI"
+        " benchmark bots across City or Country scopes using Expected vs"
+        " Observed Residual Analytics."
     )
 
-    ghost_records = conn.execute("SELECT * FROM synthetic_ghosts").fetchall()
+    reseed_c1, reseed_c2 = st.columns([3, 1])
+    reseed_c1.info(
+        "💡 Bots represent universal category anchors (Beginner+ 1.5 through"
+        " Elite 6.5). If your database contains legacy bots, click the sync"
+        " button to refresh the directory."
+    )
+    if reseed_c2.button(
+        "🔄 Force Re-seed / Sync Benchmark Ghosts", use_container_width=True
+    ):
+      default_ghosts = [
+          (
+              "GHOST_BEG_PLUS_15",
+              "Ghost Beginner+ 1.5",
+              "BALANCED",
+              1.5000,
+              "NATIONAL",
+              1,
+              0,
+          ),
+          (
+              "GHOST_INT_25",
+              "Ghost Intermediate 2.5",
+              "BALANCED",
+              2.5000,
+              "NATIONAL",
+              1,
+              0,
+          ),
+          (
+              "GHOST_INT_PLUS_35",
+              "Ghost Intermediate+ 3.5",
+              "BALANCED",
+              3.5000,
+              "NATIONAL",
+              1,
+              0,
+          ),
+          (
+              "GHOST_ADV_45",
+              "Ghost Advanced 4.5",
+              "BALANCED",
+              4.5000,
+              "NATIONAL",
+              1,
+              0,
+          ),
+          (
+              "GHOST_PRO_55",
+              "Ghost Pro 5.5",
+              "BALANCED",
+              5.5000,
+              "NATIONAL",
+              1,
+              0,
+          ),
+          (
+              "GHOST_ELITE_65",
+              "Ghost Elite 6.5",
+              "BALANCED",
+              6.5000,
+              "NATIONAL",
+              1,
+              0,
+          ),
+      ]
+      for gid, gname, gstyle, gmmr, gcity, gact, gsims in default_ghosts:
+        conn.execute(
+            """INSERT INTO synthetic_ghosts (ghost_id, ghost_name, playstyle, assigned_mmr, target_city, is_active, sims_run_count)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(ghost_id) DO UPDATE SET 
+                           ghost_name=excluded.ghost_name, playstyle=excluded.playstyle, assigned_mmr=excluded.assigned_mmr, is_active=1""",
+            (gid, gname, gstyle, gmmr, gcity, gact, gsims),
+        )
+      conn.commit()
+      st.success("✅ Benchmark ghosts updated and synced with database!")
+      st.rerun()
+
+    ghost_records = conn.execute(
+        "SELECT * FROM synthetic_ghosts ORDER BY assigned_mmr ASC"
+    ).fetchall()
     g_cols = st.columns(len(ghost_records) if ghost_records else 1)
     for i, g in enumerate(ghost_records):
       with g_cols[i]:
-        st.markdown(f"### 🤖 {g['ghost_name']}")
-        st.write(f"**Playstyle:** `{g['playstyle']}`")
-        st.write(f"**Baseline MMR:** `{g['assigned_mmr']:.4f}`")
-        st.write(f"**Sims Run:** `{g['sims_run_count']}`")
+        st.markdown(f"**🤖 {g['ghost_name']}**")
+        st.caption(
+            f"MMR: `{g['assigned_mmr']:.3f}` | Style: `{g['playstyle']}`"
+        )
 
     st.markdown("---")
-    st.subheader("Run Standalone Monte Carlo Duels")
-    all_cities = conn.execute(
-        "SELECT location_name FROM locations WHERE location_type = 'CITY' AND"
-        " is_active = 1"
-    ).fetchall()
-    sim_c1, sim_c2 = st.columns(2)
-    target_c_name = sim_c1.selectbox(
-        "Target City", [c[0] for c in all_cities] if all_cities else []
+    st.markdown("#### 🎯 Configure Simulation Duel")
+
+    g_sc1, g_sc2, g_sc3 = st.columns(3)
+    target_scope = g_sc1.radio(
+        "Territory Scope", ["City vs Ghosts", "Country vs Ghosts"], horizontal=True
     )
-    sim_depth = sim_c2.select_slider(
+
+    if target_scope == "City vs Ghosts":
+      all_cities = conn.execute("""
+                SELECT location_id, location_name FROM locations 
+                WHERE location_type = 'CITY' AND is_active = 1 ORDER BY location_name
+            """).fetchall()
+      c_map = {c["location_name"]: c["location_id"] for c in all_cities}
+      sel_loc_name = g_sc2.selectbox("Select Municipality", list(c_map.keys()))
+      target_loc_id = c_map.get(sel_loc_name)
+      loc_filter_col = "home_city_id"
+      target_loc_val = target_loc_id
+    else:
+      all_countries = conn.execute("""
+                SELECT location_id, location_name, country_code FROM locations 
+                WHERE location_type = 'COUNTRY' AND is_active = 1 ORDER BY location_name
+            """).fetchall()
+      co_map = {c["location_name"]: c["country_code"] for c in all_countries}
+      sel_loc_name = g_sc2.selectbox("Select Country", list(co_map.keys()))
+      target_loc_val = co_map.get(sel_loc_name)
+      loc_filter_col = "home_country_code"
+
+    ghost_opts = {g["ghost_name"]: dict(g) for g in ghost_records}
+    sel_ghost_names = g_sc3.multiselect(
+        "Select Active Bots in Ensemble",
+        list(ghost_opts.keys()),
+        default=list(ghost_opts.keys()),
+    )
+
+    p_ratings = [
+        float(r[0])
+        for r in conn.execute(
+            f"""SELECT latent_mmr FROM players 
+               WHERE {loc_filter_col} = ? AND rating_deviation <= 100.0 AND calibration_tier != 'INACTIVE'""",
+            (target_loc_val,),
+        ).fetchall()
+    ]
+
+    st.write(
+        f"**Sample Pool for {sel_loc_name}:** `{len(p_ratings)}` verified"
+        " residents (RD ≤ 100.0) available for simulation."
+    )
+
+    sim_depth = st.select_slider(
         "Monte Carlo Iterations",
         options=[1000, 5000, 10000, 20000],
         value=10000,
         key="standalone_ghost_depth",
     )
 
-    if st.button("⚡ Run Full Monte Carlo Duels", type="primary"):
-      c_row = conn.execute(
-          "SELECT location_id FROM locations WHERE location_name = ?",
-          (target_c_name,),
-      ).fetchone()
-      if c_row:
-        p_ratings = [
-            float(r[0])
-            for r in conn.execute(
-                """SELECT latent_mmr FROM players 
-                   WHERE home_city_id = ? AND rating_deviation <= 100.0 AND calibration_tier != 'INACTIVE'""",
-                (c_row[0],),
-            ).fetchall()
-        ]
-        if not p_ratings:
-          st.error("No verified players in city to simulate against ghosts.")
-        else:
-          ghost_list = [
-              dict(g)
-              for g in conn.execute(
-                  "SELECT * FROM synthetic_ghosts WHERE is_active = 1"
-              ).fetchall()
-          ]
-          res = run_ghost_monte_carlo(p_ratings, ghost_list, n_sims=sim_depth)
-          st.markdown("### 📊 Simulation Output")
-          r1, r2, r3, r4 = st.columns(4)
-          r1.metric("Observed Win Rate", f"{res['ensemble_win_rate']*100:.2f}%")
-          r2.metric("Expected Win Rate", f"{res['expected_win_rate']*100:.2f}%")
-          r3.metric(
-              "Performance Residual", f"{res['performance_residual']:+.4f}"
-          )
-          r4.metric("Projected Raw Offset", f"{res['proposed_offset']:+.4f}")
+    can_run = len(p_ratings) >= 1 and len(sel_ghost_names) >= 1
+    if st.button(
+        f"⚡ Run Monte Carlo Duels: {sel_loc_name} vs Selected Ghosts",
+        type="primary",
+        disabled=(not can_run),
+    ):
+      selected_ghost_profiles = [ghost_opts[name] for name in sel_ghost_names]
+      res = run_ghost_monte_carlo(
+          p_ratings, selected_ghost_profiles, n_sims=sim_depth
+      )
+
+      st.markdown("### 📊 Simulation Output & Performance Residuals")
+      r1, r2, r3, r4 = st.columns(4)
+      r1.metric("Observed Win Rate", f"{res['ensemble_win_rate']*100:.2f}%")
+      r2.metric("Expected Win Rate", f"{res['expected_win_rate']*100:.2f}%")
+      r3.metric(
+          "Performance Residual (Δ)",
+          f"{res['performance_residual']:+.4f}",
+          help="Observed win rate minus mathematically expected win rate.",
+      )
+      r4.metric(
+          "Recommended Macro Offset",
+          f"{res['proposed_offset']:+.4f} MMR",
+          help="Regularized adjustment to align with standard benchmark bots.",
+      )
+
+      st.markdown("#### 🤖 Performance Breakdown Per Bot")
+      g_breakdown_rows = []
+      for g in selected_ghost_profiles:
+        g_name = g["ghost_name"]
+        g_mmr = float(g["assigned_mmr"])
+        obs_wr = res["breakdown"].get(g_name, 0.5000)
+        exp_wr_g = np.mean(
+            [1.0 / (1.0 + 10.0 ** ((g_mmr - lr) / 2.0)) for lr in p_ratings]
+        )
+        res_g = obs_wr - exp_wr_g
+        g_breakdown_rows.append({
+            "Bot Benchmark": g_name,
+            "Bot Baseline MMR": f"{g_mmr:.3f}",
+            "Observed Win Rate": f"{obs_wr*100:.2f}%",
+            "Expected Win Rate": f"{exp_wr_g*100:.2f}%",
+            "Residual (Skill Divergence)": f"{res_g:+.4f}",
+        })
+      st.dataframe(pd.DataFrame(g_breakdown_rows), use_container_width=True)
 
   with h_tab4:
     st.subheader("Social Graph Centrality & Disconnection Telemetry")

@@ -459,6 +459,60 @@ def seed_factory_parameters(cursor, overwrite_existing=False):
           "3. Margins & Rightsizing",
       ),
       (
+          "ALLOW_UNDERDOG_LOSS_DISCOVERY",
+          1.0,
+          1,
+          "Underdog Defeat Discovery Toggle",
+          "1.0 allows fighting underdogs to gain discovery rating points on tight defeats; 0.0 locks defeats to non-positive.",
+          "Turn ON to help underdogs climb without needing wins; turn OFF to enforce absolute loss non-positivity.",
+          "3. Margins & Rightsizing",
+      ),
+      (
+          "UNDERDOG_LOSS_MIN_GAME_SHARE",
+          0.400,
+          1,
+          "Underdog Loss Game Share Floor",
+          "Minimum fraction of total games an underdog must win (e.g. 0.40 = 40%) to trigger Micro-Discovery.",
+          "Higher values (0.45) require tighter scores like 6-7; lower values (0.35) reward 4-6.",
+          "3. Margins & Rightsizing",
+      ),
+      (
+          "UNDERDOG_LOSS_MIN_RATING_GAP",
+          1.000,
+          1,
+          "Underdog Loss Opponent Rating Gap",
+          "Minimum MMR gap opponents must hold above player (e.g. 1.00 MMR) to qualify for defeat discovery.",
+          "Ensures discovery points only fire against legitimate higher-tier opponents.",
+          "3. Margins & Rightsizing",
+      ),
+      (
+          "UNDERDOG_LOSS_MAX_DELTA",
+          0.0300,
+          1,
+          "Underdog Loss Max Gain Ceiling",
+          "Hard ceiling on rating points gained from a defeat.",
+          "Default 0.0300 (+0.03 MMR max).",
+          "3. Margins & Rightsizing",
+      ),
+      (
+          "RIGHTSIZING_ACCURACY_CEILING",
+          80.0,
+          1,
+          "Post-PR Rightsizing Accuracy Ceiling",
+          "Accuracy threshold where rightsizing interpolation tapers off completely.",
+          "Allows post-PR verified players to continue rightsizing smoothly until fully verified.",
+          "3. Margins & Rightsizing",
+      ),
+      (
+          "RIGHTSIZING_TAPER_MAX_WEIGHT",
+          0.350,
+          1,
+          "Post-PR Rightsizing Max Weight",
+          "Maximum interpolation blend factor for newly graduated verified players.",
+          "Tuned to 0.350 for gradual smoothing.",
+          "3. Margins & Rightsizing",
+      ),
+      (
           "ICE_OUT_GAP_TIER_1",
           1.50,
           1,
@@ -1044,7 +1098,7 @@ def seed_factory_parameters(cursor, overwrite_existing=False):
           "9. Format Multipliers (M_C)",
       ),
       (
-          "AMER_16",
+          "MC_AMER_16",
           0.300,
           1,
           "Format Multiplier: Americano 16",
@@ -1817,6 +1871,7 @@ class RyftV16:
           p.get("effective_pre_rd", p.get("rating_deviation", 350.0))
       )
       prov = bool(p.get("is_provisional", 1))
+      p_acc = float(p.get("rating_accuracy_pct", 0.0))
       is_manual_override = bool(p.get("is_manually_verified", 0))
       is_quar = bool(p.get("is_quarantined", 0))
       won = (is_a and s_a > s_b) or (not is_a and s_b > s_a)
@@ -1860,9 +1915,26 @@ class RyftV16:
           else 0.0
       )
 
-      # ==============================================================================
-      # REFINED INTUITIVE BLEND: WIN vs. LOSS EVALUATION ENGINE
-      # ==============================================================================
+      # ----------------------------------------------------------------------
+      # CONTINUOUS ACCURACY-TAPERED RIGHTSIZING CONTROLS
+      # ----------------------------------------------------------------------
+      acc_ceil = float(cfg.get("RIGHTSIZING_ACCURACY_CEILING", 80.0))
+      acc_floor = float(cfg.get("ACCURACY_HIGH_TRUST_FLOOR", 65.0))
+      max_taper_w = float(cfg.get("RIGHTSIZING_TAPER_MAX_WEIGHT", 0.350))
+
+      if prov:
+        w_rightsize = 1.0
+      elif p_acc < acc_ceil:
+        w_rightsize = (
+            max(0.0, (acc_ceil - p_acc) / max(1.0, (acc_ceil - acc_floor)))
+            * max_taper_w
+        )
+      else:
+        w_rightsize = 0.0
+
+      # ======================================================================
+      # UNIFIED WIN vs. LOSS EVALUATION ENGINE
+      # ======================================================================
       if is_quar:
         raw_d = 0.000
         flags.append("[ALERT_QUARANTINE_ISOLATION_ACTIVE]")
@@ -1870,88 +1942,118 @@ class RyftV16:
         raw_d = standard_einstein_delta
         flags.append("DRAW_PARITY_EXCHANGE")
       elif won:
-        if prov and s_a != s_b:
-          actual_game_ratio = (g_w_raw + 0.5) / (g_l_raw + 0.5)
-          r_perf_team = opp_team_r + cfg.get(
-              "LOGISTIC_BETA", 2.0
-          ) * math.log10(actual_game_ratio)
+        # ------------------------------------------------------------------
+        # RULE 1: STRICT WIN NON-NEGATIVITY (ALL PLAYERS EARN >= +0.0005)
+        # ------------------------------------------------------------------
+        actual_game_ratio = (g_w_raw + 0.5) / (g_l_raw + 0.5)
+        r_perf_team = opp_team_r + cfg.get("LOGISTIC_BETA", 2.0) * math.log10(
+            actual_game_ratio
+        )
 
-          if (
-              not is_singles
-              and partner
-              and partner_gap >= 1.500
-              and r > float(partner.get("latent_mmr", 3.0))
-          ):
-            raw_d = max(0.0050, standard_einstein_delta)
-            flags.append("[ALERT_ANCHOR_CARRY_WIN_SHIELD]")
+        if w_rightsize > 0.0:
+          raw_pr_delta = (
+              (r_perf_team - r)
+              * cfg.get("PROVISIONAL_ABSORPTION_ALPHA", 0.45)
+              * mc
+              * g_opp
+          )
+          max_d = cfg.get("MAX_PROVISIONAL_DELTA", 0.750)
+
+          if r_perf_team >= r:
+            # Demonstrated higher ceiling -> Absorb positive rightsizing delta
+            bounded_interp = min(max_d, max(0.0005, raw_pr_delta))
           else:
-            raw_pr_delta = (
-                (r_perf_team - r)
-                * cfg.get("PROVISIONAL_ABSORPTION_ALPHA", 0.45)
-                * mc
-                * g_opp
+            # Underperformed high rating, but WON the match:
+            # Enforce non-negative floor! Winner never drops points.
+            bounded_interp = max(0.0005, standard_einstein_delta)
+            flags.append("[ALERT_RIGHTSIZING_WIN_NON_NEGATIVE_FLOOR]")
+
+          # Blend rightsizing interpolation with standard Einstein micro-delta
+          raw_d = (1.0 - w_rightsize) * max(
+              0.0005, standard_einstein_delta
+          ) + (w_rightsize * bounded_interp)
+          raw_d = max(0.0005, raw_d)
+
+          if prov:
+            flags.append("RIGHTSIZING_INTERPOLATION")
+          else:
+            flags.append(
+                f"ACCURACY_TAPERED_RIGHTSIZING ({int(w_rightsize*100)}%)"
             )
-            max_d = cfg.get("MAX_PROVISIONAL_DELTA", 0.750)
-
-            if r_perf_team >= r:
-              # Outperformed current rating -> Rightsize UPWARD
-              raw_d = min(max_d, max(0.0010, raw_pr_delta))
-              flags.append("RIGHTSIZING_INTERPOLATION")
-            else:
-              # r_perf_team < r. Underperformed high self-declaration.
-              # DID THEY WIN CONVINCINGLY? (Shutout or dominant margin >= 2x games)
-              is_convincing_blowout = (g_l_raw == 0) or (
-                  g_w_raw >= 2 * g_l_raw and g_w_raw >= 4
-              )
-              if is_convincing_blowout:
-                # Downward pull strictly blocked on shutouts and blowouts!
-                raw_d = max(0.0010, standard_einstein_delta)
-                flags.append("[ALERT_BLOWOUT_WIN_NON_NEGATIVE_SHIELD]")
-              else:
-                # Barely scraped by in a tight match (e.g. 7-6) against lower opponents -> Allow downward rightsizing
-                raw_d = max(-max_d, raw_pr_delta)
-                flags.append("RIGHTSIZING_INTERPOLATION")
-                flags.append("[ALERT_OVERRATED_PR_WIN_DOWNWARD_PULL]")
         else:
-          # Verified player win: strictly non-negative
-          raw_d = max(0.0010, standard_einstein_delta)
+          # Fully verified anchor win
+          raw_d = max(0.0005, standard_einstein_delta)
+
+        # Anchor carry protection
+        if (
+            not is_singles
+            and partner
+            and partner_gap >= 1.500
+            and r > float(partner.get("latent_mmr", 3.0))
+        ):
+          raw_d = max(0.0050, raw_d)
+          flags.append("[ALERT_ANCHOR_CARRY_WIN_SHIELD]")
+
       else:
-        # LOSS CASE
-        if prov and s_a != s_b:
-          actual_game_ratio = (g_l_raw + 0.5) / (g_w_raw + 0.5)
-          r_perf_team = opp_team_r + cfg.get(
-              "LOGISTIC_BETA", 2.0
-          ) * math.log10(actual_game_ratio)
+        # ------------------------------------------------------------------
+        # RULE 2: LOSS EVALUATION (UNDERDOG DISCOVERY OR NON-POSITIVE CLAMP)
+        # ------------------------------------------------------------------
+        tot_games = g_w_raw + g_l_raw
+        game_win_share = (g_l_raw / tot_games) if tot_games > 0 else 0.0
 
-          tot_games = g_w_raw + g_l_raw
-          game_win_share = (g_l_raw / tot_games) if tot_games > 0 else 0.0
+        allow_discovery = bool(cfg.get("ALLOW_UNDERDOG_LOSS_DISCOVERY", 1.0))
+        min_game_share = float(cfg.get("UNDERDOG_LOSS_MIN_GAME_SHARE", 0.400))
+        min_opp_gap = float(cfg.get("UNDERDOG_LOSS_MIN_RATING_GAP", 1.000))
+        max_discovery_delta = float(cfg.get("UNDERDOG_LOSS_MAX_DELTA", 0.0300))
 
-          if r_perf_team > r:
-            # Underdog provisional fought well against much higher opponents!
-            if game_win_share < 0.35:
-              # Blowout defeat (e.g. 1-6, 2-6): Clamp to non-positive 0.0000
-              raw_d = 0.0000
+        actual_game_ratio = (g_l_raw + 0.5) / (g_w_raw + 0.5)
+        r_perf_team = opp_team_r + cfg.get("LOGISTIC_BETA", 2.0) * math.log10(
+            actual_game_ratio
+        )
+        opp_gap = opp_team_r - r
+
+        is_underdog_discovery_eligible = (
+            allow_discovery
+            and (game_win_share >= min_game_share)
+            and (opp_gap >= min_opp_gap)
+            and (w_rightsize > 0.0)
+        )
+
+        if is_underdog_discovery_eligible:
+          # Underdog fought valiantly against much higher rated opponents (>= 40% game share)
+          raw_discovery = (r_perf_team - r) * 0.10 * mc * g_opp
+          raw_d = min(max_discovery_delta, max(0.0050, raw_discovery))
+          flags.append("[ALERT_UNDERDOG_DEFEAT_MICRO_DISCOVERY]")
+        else:
+          # Standard defeat: Guaranteed non-positive (<= 0.0000)
+          if w_rightsize > 0.0:
+            if r_perf_team > r:
+              # Outperformed rating on game share, but didn't meet underdog threshold -> Clamp at 0.0
+              bounded_loss = 0.0000
               flags.append("[ALERT_LOSS_NON_POSITIVITY_CLAMP]")
             else:
-              # Pushed favorites to 6-7 / tight margin (>= 35% game share): Award Underdog Micro-Discovery!
-              raw_discovery_delta = (
-                  (r_perf_team - r) * 0.10 * mc * g_opp
+              raw_pr_delta = (
+                  (r_perf_team - r)
+                  * cfg.get("PROVISIONAL_ABSORPTION_ALPHA", 0.45)
+                  * mc
+                  * g_opp
               )
-              raw_d = min(0.0400, max(0.0050, raw_discovery_delta))
-              flags.append("[ALERT_UNDERDOG_DEFEAT_MICRO_DISCOVERY]")
+              max_d = cfg.get("MAX_PROVISIONAL_DELTA", 0.750)
+              bounded_loss = max(-max_d, min(0.0, raw_pr_delta))
+
+            raw_d = (1.0 - w_rightsize) * min(
+                0.0000, standard_einstein_delta
+            ) + (w_rightsize * bounded_loss)
+            raw_d = min(0.0000, raw_d)
+
+            if prov:
+              flags.append("RIGHTSIZING_INTERPOLATION")
+            else:
+              flags.append(
+                  f"ACCURACY_TAPERED_RIGHTSIZING ({int(w_rightsize*100)}%)"
+              )
           else:
-            raw_pr_delta = (
-                (r_perf_team - r)
-                * cfg.get("PROVISIONAL_ABSORPTION_ALPHA", 0.45)
-                * mc
-                * g_opp
-            )
-            max_d = cfg.get("MAX_PROVISIONAL_DELTA", 0.750)
-            raw_d = max(-max_d, min(0.0, raw_pr_delta))
-            flags.append("RIGHTSIZING_INTERPOLATION")
-        else:
-          # Verified player defeat: strictly non-positive
-          raw_d = min(0.0000, standard_einstein_delta)
+            raw_d = min(0.0000, standard_einstein_delta)
 
       # PARTNER DISPARITY & MUTUAL PROVISIONAL PARITY CLAMP
       if not is_singles and partner and not is_quar and not is_draw:
@@ -2070,7 +2172,7 @@ class RyftV16:
           cfg.get("PROVISIONAL_BYPASS_EXCHANGE_CAP", 1)
       ):
         max_allowed = cfg.get("MAX_PROVISIONAL_DELTA", 0.750)
-        final_d = min(max_allowed, max(0.0, raw_d))
+        final_d = min(max_allowed, max(0.0005, raw_d))
         flags.append("PROVISIONAL_CAP_BYPASS")
         if final_d >= 0.500:
           flags.append("[ALERT_SMURF_RIGHTSIZING_SURGE]")
@@ -5030,6 +5132,9 @@ elif nav == "🏢 Venues & Regions":
         )
   conn.close()
 
+# ==============================================================================
+# 🌐 TAB: HAWKING MACRO ENGINE & REGIONAL NORMALIZATION (V2 COMPLETE)
+# ==============================================================================
 elif nav == "🌐 Hawking Engine":
   st.title("🌐 Hawking Macro Normalization & Regional Diffusion")
   st.caption(

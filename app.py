@@ -273,7 +273,7 @@ def init_db():
         """INSERT INTO synthetic_ghosts (ghost_id, ghost_name, playstyle, assigned_mmr, target_city, is_active, sims_run_count)
            VALUES (?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(ghost_id) DO UPDATE SET 
-               ghost_name=excluded.ghost_name, playstyle=excluded.playstyle, assigned_mmr=excluded.assigned_mmr""",
+               ghost_name=excluded.ghost_name, playstyle=excluded.playstyle, assigned_mmr=excluded.assigned_mmr, is_active=1""",
         (gid, gname, gstyle, gmmr, gcity, gact, gsims),
     )
 
@@ -1044,7 +1044,7 @@ def seed_factory_parameters(cursor, overwrite_existing=False):
           "9. Format Multipliers (M_C)",
       ),
       (
-          "MC_AMER_16",
+          "AMER_16",
           0.300,
           1,
           "Format Multiplier: Americano 16",
@@ -1860,6 +1860,9 @@ class RyftV16:
           else 0.0
       )
 
+      # ==============================================================================
+      # REFINED INTUITIVE BLEND: WIN vs. LOSS EVALUATION ENGINE
+      # ==============================================================================
       if is_quar:
         raw_d = 0.000
         flags.append("[ALERT_QUARANTINE_ISOLATION_ACTIVE]")
@@ -1889,32 +1892,52 @@ class RyftV16:
                 * g_opp
             )
             max_d = cfg.get("MAX_PROVISIONAL_DELTA", 0.750)
-            raw_d = max(-max_d, min(max_d, raw_pr_delta))
-            flags.append("RIGHTSIZING_INTERPOLATION")
-            if raw_d < 0:
-              flags.append("[ALERT_OVERRATED_PR_WIN_DOWNWARD_PULL]")
+
+            if r_perf_team >= r:
+              # Outperformed current rating -> Rightsize UPWARD
+              raw_d = min(max_d, max(0.0010, raw_pr_delta))
+              flags.append("RIGHTSIZING_INTERPOLATION")
+            else:
+              # r_perf_team < r. Underperformed high self-declaration.
+              # DID THEY WIN CONVINCINGLY? (Shutout or dominant margin >= 2x games)
+              is_convincing_blowout = (g_l_raw == 0) or (
+                  g_w_raw >= 2 * g_l_raw and g_w_raw >= 4
+              )
+              if is_convincing_blowout:
+                # Downward pull strictly blocked on shutouts and blowouts!
+                raw_d = max(0.0010, standard_einstein_delta)
+                flags.append("[ALERT_BLOWOUT_WIN_NON_NEGATIVE_SHIELD]")
+              else:
+                # Barely scraped by in a tight match (e.g. 7-6) against lower opponents -> Allow downward rightsizing
+                raw_d = max(-max_d, raw_pr_delta)
+                flags.append("RIGHTSIZING_INTERPOLATION")
+                flags.append("[ALERT_OVERRATED_PR_WIN_DOWNWARD_PULL]")
         else:
+          # Verified player win: strictly non-negative
           raw_d = max(0.0010, standard_einstein_delta)
       else:
+        # LOSS CASE
         if prov and s_a != s_b:
           actual_game_ratio = (g_l_raw + 0.5) / (g_w_raw + 0.5)
           r_perf_team = opp_team_r + cfg.get(
               "LOGISTIC_BETA", 2.0
           ) * math.log10(actual_game_ratio)
 
+          tot_games = g_w_raw + g_l_raw
+          game_win_share = (g_l_raw / tot_games) if tot_games > 0 else 0.0
+
           if r_perf_team > r:
-            tot_games = g_w_raw + g_l_raw
-            game_win_share = (
-                (g_l_raw / tot_games) if tot_games > 0 else 0.0
-            )
-            if game_win_share < 0.30:
+            # Underdog provisional fought well against much higher opponents!
+            if game_win_share < 0.35:
+              # Blowout defeat (e.g. 1-6, 2-6): Clamp to non-positive 0.0000
               raw_d = 0.0000
               flags.append("[ALERT_LOSS_NON_POSITIVITY_CLAMP]")
             else:
+              # Pushed favorites to 6-7 / tight margin (>= 35% game share): Award Underdog Micro-Discovery!
               raw_discovery_delta = (
                   (r_perf_team - r) * 0.10 * mc * g_opp
               )
-              raw_d = min(0.0250, raw_discovery_delta)
+              raw_d = min(0.0400, max(0.0050, raw_discovery_delta))
               flags.append("[ALERT_UNDERDOG_DEFEAT_MICRO_DISCOVERY]")
           else:
             raw_pr_delta = (
@@ -1927,6 +1950,7 @@ class RyftV16:
             raw_d = max(-max_d, min(0.0, raw_pr_delta))
             flags.append("RIGHTSIZING_INTERPOLATION")
         else:
+          # Verified player defeat: strictly non-positive
           raw_d = min(0.0000, standard_einstein_delta)
 
       # PARTNER DISPARITY & MUTUAL PROVISIONAL PARITY CLAMP
@@ -3103,41 +3127,7 @@ elif nav == "🎾 Log Matches":
           raise e
         finally:
           conn.close()
-import numpy as np
-
-
-def _generate_mexicano_round(
-    standings_sorted_pids, court_picks, current_round, start_match_order
-):
-  fixtures = []
-  fixture_order = start_match_order
-  num_courts = max(1, len(court_picks))
-  max_courts = max(1, min(num_courts, len(standings_sorted_pids) // 4))
-  court_pool = list(standings_sorted_pids[: (max_courts * 4)])
-
-  for c_idx in range(max_courts):
-    if len(court_pool) < 4:
-      break
-    m_players, court_pool = court_pool[:4], court_pool[4:]
-    fixtures.append({
-        "round_number": current_round,
-        "court_id": court_picks[c_idx % num_courts],
-        "match_order": fixture_order,
-        "team_a_p1_id": m_players[0],
-        "team_a_p2_id": m_players[3],
-        "team_b_p1_id": m_players[1],
-        "team_b_p2_id": m_players[2],
-        "group_id": "A",
-    })
-    fixture_order += 1
-  return fixtures
-
-
-SessionLogicEngine.generate_mexicano_round = staticmethod(
-    _generate_mexicano_round
-)
-
-if nav == "🗓️ Club Sessions & Mixers":
+elif nav == "🗓️ Club Sessions & Mixers":
   st.title("Sessions & Event Traffic Controller")
   st.info(
       "Please use the upgraded **🧠 Session Logic (V16.2 PROD)** tab for"
@@ -3149,6 +3139,36 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
   st.caption(
       "Multi-stage atomic scheduling, Americano cycles, sit-out management, and"
       " Mexicano phase-gating."
+  )
+
+  def _generate_mexicano_round(
+      standings_sorted_pids, court_picks, current_round, start_match_order
+  ):
+    fixtures = []
+    fixture_order = start_match_order
+    num_courts = max(1, len(court_picks))
+    max_courts = max(1, min(num_courts, len(standings_sorted_pids) // 4))
+    court_pool = list(standings_sorted_pids[: (max_courts * 4)])
+
+    for c_idx in range(max_courts):
+      if len(court_pool) < 4:
+        break
+      m_players, court_pool = court_pool[:4], court_pool[4:]
+      fixtures.append({
+          "round_number": current_round,
+          "court_id": court_picks[c_idx % num_courts],
+          "match_order": fixture_order,
+          "team_a_p1_id": m_players[0],
+          "team_a_p2_id": m_players[3],
+          "team_b_p1_id": m_players[1],
+          "team_b_p2_id": m_players[2],
+          "group_id": "A",
+      })
+      fixture_order += 1
+    return fixtures
+
+  SessionLogicEngine.generate_mexicano_round = staticmethod(
+      _generate_mexicano_round
   )
 
   conn = get_db_connection()
@@ -4258,9 +4278,6 @@ elif nav == "📜 Historical Matches":
   st.title("Historical Matches & Deep Algorithmic Audit Ledger")
   conn = get_db_connection()
 
-  # --------------------------------------------------------------------------
-  # GRANULAR ADMINISTRATIVE & HAWKING MACRO SYNC AUDIT LEDGER
-  # --------------------------------------------------------------------------
   with st.expander(
       "🌐 Administrative & Hawking Macro Sync Audit Ledger", expanded=False
   ):
@@ -5013,9 +5030,6 @@ elif nav == "🏢 Venues & Regions":
         )
   conn.close()
 
-# ==============================================================================
-# 🌐 TAB: HAWKING MACRO ENGINE & REGIONAL NORMALIZATION (V2 COMPLETE)
-# ==============================================================================
 elif nav == "🌐 Hawking Engine":
   st.title("🌐 Hawking Macro Normalization & Regional Diffusion")
   st.caption(
@@ -5155,7 +5169,6 @@ elif nav == "🌐 Hawking Engine":
               c_name = ci["location_name"]
               n_matches = ci["total_matches"]
 
-              # ACTIVE VERIFIED DENSITY FILTER
               act_ver_count = conn.execute(
                   """
                                 SELECT COUNT(DISTINCT p.player_id) 
@@ -5524,9 +5537,6 @@ elif nav == "🌐 Hawking Engine":
             help="Estimated skill gap between the two pools.",
         )
 
-  # --------------------------------------------------------------------------
-  # UPGRADED SUB-TAB 3: GRANULAR SYNTHETIC GHOST SANDBOX
-  # --------------------------------------------------------------------------
   with h_tab3:
     st.subheader("👻 Granular Synthetic Ghost Sandbox & Benchmark Ensemble")
     st.caption(

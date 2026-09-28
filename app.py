@@ -206,12 +206,6 @@ def init_db():
         points_against INTEGER DEFAULT 0, net_point_diff INTEGER DEFAULT 0, consecutive_sit INTEGER DEFAULT 0, is_qualified INTEGER DEFAULT 0, 
         knockout_seed INTEGER
     )""")
-  c.execute("""CREATE TABLE IF NOT EXISTS synthetic_ghosts (
-        ghost_id TEXT PRIMARY KEY, ghost_name TEXT NOT NULL, 
-        playstyle TEXT NOT NULL CHECK (playstyle IN ('AGGRESSIVE', 'BALANCED', 'CONSERVATIVE')), 
-        assigned_mmr REAL NOT NULL, target_city TEXT NOT NULL, is_active INTEGER NOT NULL DEFAULT 1, 
-        sims_run_count INTEGER NOT NULL DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    )""")
 
   add_column_if_not_exists(c, "players", "consecutive_losses", "INTEGER DEFAULT 0")
   add_column_if_not_exists(
@@ -220,72 +214,6 @@ def init_db():
   add_column_if_not_exists(
       c, "locations", "intransitivity_index", "REAL DEFAULT 0.0"
   )
-
-  # UPSERT 6 OFFICIAL RYFT CATEGORY BENCHMARK GHOSTS
-  default_ghosts = [
-      (
-          "GHOST_BEG_PLUS_15",
-          "Ghost Beginner+ 1.5",
-          "BALANCED",
-          1.5000,
-          "NATIONAL",
-          1,
-          0,
-      ),
-      (
-          "GHOST_INT_25",
-          "Ghost Intermediate 2.5",
-          "BALANCED",
-          2.5000,
-          "NATIONAL",
-          1,
-          0,
-      ),
-      (
-          "GHOST_INT_PLUS_35",
-          "Ghost Intermediate+ 3.5",
-          "BALANCED",
-          3.5000,
-          "NATIONAL",
-          1,
-          0,
-      ),
-      (
-          "GHOST_ADV_45",
-          "Ghost Advanced 4.5",
-          "BALANCED",
-          4.5000,
-          "NATIONAL",
-          1,
-          0,
-      ),
-      (
-          "GHOST_PRO_55",
-          "Ghost Pro 5.5",
-          "BALANCED",
-          5.5000,
-          "NATIONAL",
-          1,
-          0,
-      ),
-      (
-          "GHOST_ELITE_65",
-          "Ghost Elite 6.5",
-          "BALANCED",
-          6.5000,
-          "NATIONAL",
-          1,
-          0,
-      ),
-  ]
-  for gid, gname, gstyle, gmmr, gcity, gact, gsims in default_ghosts:
-    c.execute(
-        """INSERT INTO synthetic_ghosts (ghost_id, ghost_name, playstyle, assigned_mmr, target_city, is_active, sims_run_count)
-           VALUES (?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(ghost_id) DO UPDATE SET 
-               ghost_name=excluded.ghost_name, playstyle=excluded.playstyle, assigned_mmr=excluded.assigned_mmr, is_active=1""",
-        (gid, gname, gstyle, gmmr, gcity, gact, gsims),
-    )
 
   if c.execute("SELECT COUNT(*) FROM rating_categories").fetchone()[0] == 0:
     cats = [
@@ -1051,6 +979,15 @@ def seed_factory_parameters(cursor, overwrite_existing=False):
           "8. Hawking Macro",
       ),
       (
+          "GLOBAL_MEDIAN_TARGET",
+          3.0000,
+          1,
+          "Global Median Target",
+          "Anchor standard for national calibration.",
+          "Target median rating for active verified player pool.",
+          "8. Hawking Macro",
+      ),
+      (
           "HAWKING_MIN_ACTIVE_VERIFIED_PLAYERS",
           60.0,
           1,
@@ -1086,6 +1023,52 @@ def seed_factory_parameters(cursor, overwrite_existing=False):
           "Tikhonov Shrinkage Lambda",
           "Dampening constant in bridge confidence: K / (K + lambda).",
           "Lower values trust bridge evidence faster.",
+          "8. Hawking Macro",
+      ),
+      (
+          "HAWKING_WEIGHT_ACTIVE_PLAYERS",
+          40.0,
+          1,
+          "Readiness Weight: Active Core",
+          "Pillar 1 max score for active verified player liquidity.",
+          "Default 40.0 pts.",
+          "8. Hawking Macro",
+      ),
+      (
+          "HAWKING_WEIGHT_MATCH_DEPTH",
+          30.0,
+          1,
+          "Readiness Weight: Match Depth",
+          "Pillar 2 max score for local match depth ratio.",
+          "Default 30.0 pts.",
+          "8. Hawking Macro",
+      ),
+      (
+          "HAWKING_WEIGHT_BRIDGES",
+          30.0,
+          1,
+          "Readiness Weight: Traveler Bridges",
+          "Pillar 3 max score for cross-city bridge connectivity.",
+          "Default 30.0 pts.",
+          "8. Hawking Macro",
+      ),
+      (
+          "HAWKING_READINESS_GREEN_GATE",
+          80.0,
+          1,
+          "Readiness Green Gate %",
+          "Readiness score percentage required to unlock Green deployment"
+          " status.",
+          "Default 80.0%.",
+          "8. Hawking Macro",
+      ),
+      (
+          "HAWKING_READINESS_YELLOW_GATE",
+          50.0,
+          1,
+          "Readiness Yellow Gate %",
+          "Readiness score percentage for Yellow maturing status.",
+          "Default 50.0%.",
           "8. Hawking Macro",
       ),
       (
@@ -1473,7 +1456,7 @@ def compute_60d_country_metrics(
 
 
 # ==============================================================================
-# HAWKING MATHEMATICAL & STATISTICAL HELPERS (BITS 21 & 22)
+# HAWKING MATHEMATICAL & STATISTICAL HELPERS (BITS 20 & 22)
 # ==============================================================================
 def compute_decay_multiplier(rating: float) -> float:
   if rating >= 7.0000:
@@ -1497,10 +1480,16 @@ def evaluate_municipal_readiness(
   target_depth = float(cfg.get("HAWKING_TARGET_MATCH_DEPTH", 15.0))
   lambda_bridge = float(cfg.get("HAWKING_TIKHONOV_LAMBDA", 3.0))
 
+  w_act = float(cfg.get("HAWKING_WEIGHT_ACTIVE_PLAYERS", 40.0))
+  w_depth = float(cfg.get("HAWKING_WEIGHT_MATCH_DEPTH", 30.0))
+  w_bridge = float(cfg.get("HAWKING_WEIGHT_BRIDGES", 30.0))
+  gate_green = float(cfg.get("HAWKING_READINESS_GREEN_GATE", 80.0))
+  gate_yellow = float(cfg.get("HAWKING_READINESS_YELLOW_GATE", 50.0))
+
   p_score = (
-      min(40.0, (active_verified_count / target_active) * 40.0)
+      min(w_act, (active_verified_count / target_active) * w_act)
       if target_active > 0
-      else 40.0
+      else w_act
   )
   depth = (
       (total_matches / active_verified_count)
@@ -1508,19 +1497,19 @@ def evaluate_municipal_readiness(
       else 0.0
   )
   d_score = (
-      min(30.0, (depth / target_depth) * 30.0) if target_depth > 0 else 30.0
+      min(w_depth, (depth / target_depth) * w_depth) if target_depth > 0 else w_depth
   )
   w_conf = (
       (k_bridges / (k_bridges + lambda_bridge))
       if (k_bridges + lambda_bridge) > 0
       else 0.0
   )
-  b_score = w_conf * 30.0
+  b_score = w_conf * w_bridge
 
   total_readiness = round(p_score + d_score + b_score, 1)
-  if total_readiness >= 80.0:
+  if total_readiness >= gate_green:
     status = "GREEN (Calibrated)"
-  elif total_readiness >= 50.0:
+  elif total_readiness >= gate_yellow:
     status = "YELLOW (Maturing Pool)"
   else:
     status = "RED (Isolated Island)"
@@ -1531,6 +1520,9 @@ def evaluate_municipal_readiness(
       "w_conf": round(w_conf, 4),
       "active_verified": active_verified_count,
       "activity_depth": round(depth, 1),
+      "p_score": round(p_score, 1),
+      "d_score": round(d_score, 1),
+      "b_score": round(b_score, 1),
   }
 
 
@@ -1558,70 +1550,6 @@ def calculate_intransitivity(city_id: str, conn) -> float:
       if sa > sb:
         upsets += 1
   return round(upsets / qualifying, 4) if qualifying > 0 else 0.0000
-
-
-def run_ghost_monte_carlo(
-    local_ratings: list[float], ghost_profiles: list[dict], n_sims: int = 10000
-) -> dict:
-  if not local_ratings or not ghost_profiles:
-    return {
-        "ensemble_win_rate": 0.5000,
-        "expected_win_rate": 0.5000,
-        "performance_residual": 0.0000,
-        "proposed_offset": 0.0000,
-        "breakdown": {},
-        "total_sims": 0,
-    }
-
-  sims_per_ghost = max(1, n_sims // len(ghost_profiles))
-  breakdown = {}
-  total_actual_wins = 0
-  total_expected_wins = 0.0
-  total_matches = 0
-
-  for g in ghost_profiles:
-    g_rating = float(g["assigned_mmr"])
-    style = g.get("playstyle", "BALANCED")
-    mod = (
-        0.05
-        if style == "AGGRESSIVE"
-        else (-0.05 if style == "CONSERVATIVE" else 0.0)
-    )
-    eff_ghost_r = g_rating + mod
-    g_actual_wins = 0
-
-    for _ in range(sims_per_ghost):
-      r_local = random.choice(local_ratings)
-      ea_local = 1.0 / (1.0 + 10.0 ** ((eff_ghost_r - r_local) / 2.0))
-      total_expected_wins += ea_local
-      if random.random() < ea_local:
-        g_actual_wins += 1
-      total_matches += 1
-
-    win_rate = g_actual_wins / float(sims_per_ghost)
-    breakdown[g["ghost_name"]] = round(win_rate, 4)
-    total_actual_wins += g_actual_wins
-
-  obs_wr = (
-      total_actual_wins / float(total_matches) if total_matches > 0 else 0.5000
-  )
-  exp_wr = (
-      total_expected_wins / float(total_matches)
-      if total_matches > 0
-      else 0.5000
-  )
-  residual = obs_wr - exp_wr
-  raw_offset = residual * 0.3000
-  clamped_offset = max(-0.0750, min(0.0750, raw_offset))
-
-  return {
-      "ensemble_win_rate": round(obs_wr, 4),
-      "expected_win_rate": round(exp_wr, 4),
-      "performance_residual": round(residual, 4),
-      "proposed_offset": round(clamped_offset, 4),
-      "breakdown": breakdown,
-      "total_sims": total_matches,
-  }
 
 
 def calculate_hawking_player_delta(
@@ -2713,7 +2641,6 @@ class RyftV16:
           cfg,
       )
 
-      # Determine Tier
       is_sys_anc = bool(p.get("is_anchor", 0) == 1)
       if new_prov == 1:
         tier = "PROVISIONAL"
@@ -3171,7 +3098,6 @@ if nav == "📊 The Dashboard":
             "players",
             "venues",
             "locations",
-            "synthetic_ghosts",
             "global_config",
         ]:
           conn.execute(f"DELETE FROM {tbl};")
@@ -5835,19 +5761,20 @@ elif nav == "🏢 Venues & Regions":
   conn.close()
 
 # ==============================================================================
-# 🌐 TAB: HAWKING MACRO ENGINE & REGIONAL NORMALIZATION (V2 COMPLETE)
+# 🌐 TAB: HAWKING MACRO ENGINE (PURE EMPIRICAL TOPOLOGY & PARAMETERIZED AUDIT)
 # ==============================================================================
 elif nav == "🌐 Hawking Engine":
   st.title("🌐 Hawking Macro Normalization & Regional Diffusion")
   st.caption(
       "Global macro-calibration suite: monitor systemic rating drift, analyze"
       " national topology, test inter-region parity, and deploy regularized"
-      " offsets."
+      " offsets based exclusively on verified physical human bridges."
   )
 
   conn = get_db_connection()
   cfg = RyftV16.get_configs(conn=conn)
 
+  anchor_target = float(cfg.get("GLOBAL_MEDIAN_TARGET", 3.0000))
   verified_ratings = [
       float(r[0])
       for r in conn.execute("""
@@ -5857,9 +5784,11 @@ elif nav == "🌐 Hawking Engine":
   ]
 
   sys_median = (
-      float(np.median(verified_ratings)) if verified_ratings else 3.0000
+      calculate_true_median(verified_ratings)
+      if verified_ratings
+      else anchor_target
   )
-  sys_drift = sys_median - 3.0000
+  sys_drift = sys_median - anchor_target if sys_median is not None else 0.0000
   total_country_bridges = (
       conn.execute(
           "SELECT COUNT(DISTINCT match_id) FROM matches WHERE is_country_bridge"
@@ -5875,10 +5804,10 @@ elif nav == "🌐 Hawking Engine":
   )
 
   g_col1, g_col2, g_col3, g_col4 = st.columns(4)
-  g_col1.metric("Global Anchor Target", "3.0000 MMR")
+  g_col1.metric("Global Anchor Target", f"{anchor_target:.4f} MMR")
   g_col2.metric(
       "Observed System Median",
-      f"{sys_median:.4f}",
+      f"{sys_median:.4f}" if sys_median is not None else "N/A",
       delta=f"{sys_drift:+.4f}",
       delta_color="inverse",
   )
@@ -5896,10 +5825,10 @@ elif nav == "🌐 Hawking Engine":
 
   st.markdown("---")
 
-  h_tab1, h_tab2, h_tab3, h_tab4, h_tab5 = st.tabs([
+  # RETIRED: Sub-Tab 3 (Synthetic Ghosts) completely removed!
+  h_tab1, h_tab2, h_tab3, h_tab4 = st.tabs([
       "🌍 Country & Municipal Hierarchy",
       "⚔️ Cross-Region Parity Analyzer",
-      "👻 Synthetic Ghost Sandbox",
       "🕸️ Graph Centrality & Risks",
       "⚙️ Hawking Governance",
   ])
@@ -5979,6 +5908,7 @@ elif nav == "🌐 Hawking Engine":
               ci_m = compute_60d_city_metrics(cid, conn)
               act_ver_count = ci_m["liquidity"]
 
+              # Query qualified bridge nodes (RD <= 80, >= 5 bridge matches)
               k_bridges = conn.execute(
                   """
                                 SELECT COUNT(DISTINCT p.player_id) 
@@ -5994,6 +5924,7 @@ elif nav == "🌐 Hawking Engine":
                   act_ver_count, n_matches, k_bridges, cfg
               )
               it_val = calculate_intransitivity(cid, conn)
+
               conn.execute(
                   """UPDATE locations SET readiness_score = ?, intransitivity_index = ?, intransitivity_idx = ?, active_bridge_count = ?
                                 WHERE location_id = ?""",
@@ -6013,81 +5944,53 @@ elif nav == "🌐 Hawking Engine":
                 m4.metric("Intransitivity", f"{it_val:.4f}")
                 m5.metric("Current Offset", f"{ci['hawking_offset']:+.4f}")
 
-                st.markdown("##### Macro Calibration Pathway")
-                pcol1, pcol2 = st.columns([2, 1])
-                calc_mode = pcol1.selectbox(
-                    f"Calculation Mode ({c_name})",
-                    [
-                        "Path A: Empirical Bridge Diffusion (K ≥ 1)",
-                        "Path B: Synthetic Ghost Sandbox (K = 0 Islands)",
-                        "Path C: Dynamic Hybrid Synthesis",
-                    ],
-                    key=f"mode_{cid}",
+                st.markdown("##### 📊 Municipal Readiness Score Composition")
+                rc1, rc2, rc3 = st.columns(3)
+                rc1.caption(
+                    f"**Pillar 1: Active Core:** `{diag['p_score']}` /"
+                    f" `{cfg.get('HAWKING_WEIGHT_ACTIVE_PLAYERS', 40.0)}` pts"
+                )
+                rc2.caption(
+                    f"**Pillar 2: Match Depth:** `{diag['d_score']}` /"
+                    f" `{cfg.get('HAWKING_WEIGHT_MATCH_DEPTH', 30.0)}` pts"
+                )
+                rc3.caption(
+                    f"**Pillar 3: Traveler Bridges:** `{diag['b_score']}` /"
+                    f" `{cfg.get('HAWKING_WEIGHT_BRIDGES', 30.0)}` pts"
                 )
 
-                local_ratings = ci_m["ratings"]
-                suggested_shift = 0.0000
+                st.markdown("##### 🌉 Empirical Traveler Bridge Calibration")
 
-                if "Path A" in calc_mode:
-                  if k_bridges == 0:
-                    st.warning(
-                        "⚠️ Path A requires K ≥ 1 Bridge Nodes. Current K = 0."
-                    )
-                    suggested_shift = 0.0000
-                  else:
-                    w_c = diag["w_conf"]
-                    suggested_shift = round(-0.0300 * w_c, 4)
-                    st.info(
-                        f"Bridge Diffusion Active: K={k_bridges} ➔"
-                        f" W_conf={w_c:.4f}. Suggested Shift:"
-                        f" {suggested_shift:+.4f}"
-                    )
+                # PURE EMPIRICAL PATHWAY: Ghosts removed!
+                traveler_deltas = conn.execute(
+                    """
+                                    SELECT ml.delta_r FROM match_logs ml
+                                    JOIN matches m ON ml.match_id = m.match_id
+                                    JOIN venues v ON m.venue_id = v.venue_id
+                                    JOIN players p ON ml.player_id = p.player_id
+                                    WHERE p.home_city_id = ? AND v.city_id != ? AND p.rating_deviation <= 80.0
+                                """,
+                    (cid, cid),
+                ).fetchall()
 
-                elif "Path B" in calc_mode:
-                  ghosts = [
-                      dict(g)
-                      for g in conn.execute(
-                          "SELECT * FROM synthetic_ghosts WHERE is_active = 1"
-                      ).fetchall()
-                  ]
-                  if not local_ratings:
-                    st.error(
-                        "No verified players available in city to simulate."
-                    )
-                  else:
-                    sim_res = run_ghost_monte_carlo(
-                        local_ratings, ghosts, n_sims=5000
-                    )
-                    suggested_shift = sim_res["proposed_offset"]
-                    st.success(
-                        f"Residual Performance: Observed"
-                        f" {sim_res['ensemble_win_rate']*100:.1f}% vs Expected"
-                        f" {sim_res['expected_win_rate']*100:.1f}% (Δ"
-                        f" {sim_res['performance_residual']:+.4f}) ➔ Projected"
-                        f" Offset: {suggested_shift:+.4f}"
-                    )
+                t_deltas_list = [float(r[0]) for r in traveler_deltas]
 
-                elif "Path C" in calc_mode:
-                  ghosts = [
-                      dict(g)
-                      for g in conn.execute(
-                          "SELECT * FROM synthetic_ghosts WHERE is_active = 1"
-                      ).fetchall()
-                  ]
-                  sim_res = (
-                      run_ghost_monte_carlo(local_ratings, ghosts, n_sims=5000)
-                      if local_ratings
-                      else {"proposed_offset": 0.0}
+                if k_bridges == 0 or not t_deltas_list:
+                  w_c = 0.0
+                  suggested_shift = 0.0000
+                  st.warning(
+                      f"⚠️ **Isolated Island (K = {k_bridges}):** No qualified"
+                      " cross-city traveler matches recorded. Empirical"
+                      " diffusion locked to prevent ungrounded shifts."
                   )
+                else:
                   w_c = diag["w_conf"]
-                  shift_a = -0.0300 * w_c
-                  shift_b = sim_res["proposed_offset"]
-                  suggested_shift = round(
-                      (w_c * shift_a) + ((1.0 - w_c) * shift_b), 4
-                  )
+                  median_traveler_perf = calculate_true_median(t_deltas_list)
+                  suggested_shift = round(median_traveler_perf * w_c, 4)
                   st.info(
-                      f"Hybrid Blend (W_conf: {w_c:.2f}): Bridge={shift_a:+.4f}"
-                      f" | Ghost={shift_b:+.4f} ➔ Blended:"
+                      f"✅ **Active Bridge Diffusion:** K={k_bridges} travelers"
+                      f" (W_conf={w_c:.4f}). Median traveler delta:"
+                      f" {median_traveler_perf:+.4f} ➔ Proposed Step:"
                       f" {suggested_shift:+.4f}"
                   )
 
@@ -6097,8 +6000,9 @@ elif nav == "🌐 Hawking Engine":
                 ):
                   st.markdown(
                       "**Deployment Rules:** Provisional (RD > 100) receive"
-                      " `+0.0000`. Players $\le 4.5$ scale affinely ($R/4.5$)."
-                      " Elite Pros ($> 4.5$) scale via Jacobian Elasticity."
+                      " `+0.0000` (Firewalled). Players $\le 4.5$ scale affinely"
+                      " ($R/4.5$). Elite Pros ($> 4.5$) scale via Jacobian"
+                      " Elasticity."
                   )
 
                   approved_step = st.number_input(
@@ -6266,7 +6170,7 @@ elif nav == "🌐 Hawking Engine":
         st.markdown(f"**{reg_a_name} Profile**")
         st.write(f"• Verified Players (RD ≤ 100): `{len(ratings_a)}`")
         st.write(
-            f"• Median MMR: `{float(np.median(ratings_a)):.4f}`"
+            f"• Median MMR: `{calculate_true_median(ratings_a):.4f}`"
             if ratings_a
             else "• Median MMR: `N/A`"
         )
@@ -6274,7 +6178,7 @@ elif nav == "🌐 Hawking Engine":
         st.markdown(f"**{reg_b_name} Profile**")
         st.write(f"• Verified Players (RD ≤ 100): `{len(ratings_b)}`")
         st.write(
-            f"• Median MMR: `{float(np.median(ratings_b)):.4f}`"
+            f"• Median MMR: `{calculate_true_median(ratings_b):.4f}`"
             if ratings_b
             else "• Median MMR: `N/A`"
         )
@@ -6334,203 +6238,6 @@ elif nav == "🌐 Hawking Engine":
         )
 
   with h_tab3:
-    st.subheader("👻 Granular Synthetic Ghost Sandbox & Benchmark Ensemble")
-    st.caption(
-        "Evaluate regional skill calibration against standardized AI"
-        " benchmark bots across City or Country scopes using Expected vs"
-        " Observed Residual Analytics."
-    )
-
-    reseed_c1, reseed_c2 = st.columns([3, 1])
-    reseed_c1.info(
-        "💡 Bots represent universal category anchors (Beginner+ 1.5 through"
-        " Elite 6.5). If your database contains legacy bots, click the sync"
-        " button to refresh the directory."
-    )
-    if reseed_c2.button(
-        "🔄 Force Re-seed / Sync Benchmark Ghosts", use_container_width=True
-    ):
-      default_ghosts = [
-          (
-              "GHOST_BEG_PLUS_15",
-              "Ghost Beginner+ 1.5",
-              "BALANCED",
-              1.5000,
-              "NATIONAL",
-              1,
-              0,
-          ),
-          (
-              "GHOST_INT_25",
-              "Ghost Intermediate 2.5",
-              "BALANCED",
-              2.5000,
-              "NATIONAL",
-              1,
-              0,
-          ),
-          (
-              "GHOST_INT_PLUS_35",
-              "Ghost Intermediate+ 3.5",
-              "BALANCED",
-              3.5000,
-              "NATIONAL",
-              1,
-              0,
-          ),
-          (
-              "GHOST_ADV_45",
-              "Ghost Advanced 4.5",
-              "BALANCED",
-              4.5000,
-              "NATIONAL",
-              1,
-              0,
-          ),
-          (
-              "GHOST_PRO_55",
-              "Ghost Pro 5.5",
-              "BALANCED",
-              5.5000,
-              "NATIONAL",
-              1,
-              0,
-          ),
-          (
-              "GHOST_ELITE_65",
-              "Ghost Elite 6.5",
-              "BALANCED",
-              6.5000,
-              "NATIONAL",
-              1,
-              0,
-          ),
-      ]
-      for gid, gname, gstyle, gmmr, gcity, gact, gsims in default_ghosts:
-        conn.execute(
-            """INSERT INTO synthetic_ghosts (ghost_id, ghost_name, playstyle, assigned_mmr, target_city, is_active, sims_run_count)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)
-                       ON CONFLICT(ghost_id) DO UPDATE SET 
-                           ghost_name=excluded.ghost_name, playstyle=excluded.playstyle, assigned_mmr=excluded.assigned_mmr, is_active=1""",
-            (gid, gname, gstyle, gmmr, gcity, gact, gsims),
-        )
-      conn.commit()
-      st.success("✅ Benchmark ghosts updated and synced with database!")
-      st.rerun()
-
-    ghost_records = conn.execute(
-        "SELECT * FROM synthetic_ghosts ORDER BY assigned_mmr ASC"
-    ).fetchall()
-    g_cols = st.columns(len(ghost_records) if ghost_records else 1)
-    for i, g in enumerate(ghost_records):
-      with g_cols[i]:
-        st.markdown(f"**🤖 {g['ghost_name']}**")
-        st.caption(
-            f"MMR: `{g['assigned_mmr']:.3f}` | Style: `{g['playstyle']}`"
-        )
-
-    st.markdown("---")
-    st.markdown("#### 🎯 Configure Simulation Duel")
-
-    g_sc1, g_sc2, g_sc3 = st.columns(3)
-    target_scope = g_sc1.radio(
-        "Territory Scope", ["City vs Ghosts", "Country vs Ghosts"], horizontal=True
-    )
-
-    if target_scope == "City vs Ghosts":
-      all_cities = conn.execute("""
-                SELECT location_id, location_name FROM locations 
-                WHERE location_type = 'CITY' AND is_active = 1 ORDER BY location_name
-            """).fetchall()
-      c_map = {c["location_name"]: c["location_id"] for c in all_cities}
-      sel_loc_name = g_sc2.selectbox("Select Municipality", list(c_map.keys()))
-      target_loc_id = c_map.get(sel_loc_name)
-      loc_filter_col = "home_city_id"
-      target_loc_val = target_loc_id
-    else:
-      all_countries = conn.execute("""
-                SELECT location_id, location_name, country_code FROM locations 
-                WHERE location_type = 'COUNTRY' AND is_active = 1 ORDER BY location_name
-            """).fetchall()
-      co_map = {c["location_name"]: c["country_code"] for c in all_countries}
-      sel_loc_name = g_sc2.selectbox("Select Country", list(co_map.keys()))
-      target_loc_val = co_map.get(sel_loc_name)
-      loc_filter_col = "home_country_code"
-
-    ghost_opts = {g["ghost_name"]: dict(g) for g in ghost_records}
-    sel_ghost_names = g_sc3.multiselect(
-        "Select Active Bots in Ensemble",
-        list(ghost_opts.keys()),
-        default=list(ghost_opts.keys()),
-    )
-
-    p_ratings = [
-        float(r[0])
-        for r in conn.execute(
-            f"""SELECT latent_mmr FROM players 
-               WHERE {loc_filter_col} = ? AND rating_deviation <= 100.0 AND calibration_tier != 'INACTIVE'""",
-            (target_loc_val,),
-        ).fetchall()
-    ]
-
-    st.write(
-        f"**Sample Pool for {sel_loc_name}:** `{len(p_ratings)}` verified"
-        " residents (RD ≤ 100.0) available for simulation."
-    )
-
-    sim_depth = st.select_slider(
-        "Monte Carlo Iterations",
-        options=[1000, 5000, 10000, 20000],
-        value=10000,
-        key="standalone_ghost_depth",
-    )
-
-    can_run = len(p_ratings) >= 1 and len(sel_ghost_names) >= 1
-    if st.button(
-        f"⚡ Run Monte Carlo Duels: {sel_loc_name} vs Selected Ghosts",
-        type="primary",
-        disabled=(not can_run),
-    ):
-      selected_ghost_profiles = [ghost_opts[name] for name in sel_ghost_names]
-      res = run_ghost_monte_carlo(
-          p_ratings, selected_ghost_profiles, n_sims=sim_depth
-      )
-
-      st.markdown("### 📊 Simulation Output & Performance Residuals")
-      r1, r2, r3, r4 = st.columns(4)
-      r1.metric("Observed Win Rate", f"{res['ensemble_win_rate']*100:.2f}%")
-      r2.metric("Expected Win Rate", f"{res['expected_win_rate']*100:.2f}%")
-      r3.metric(
-          "Performance Residual (Δ)",
-          f"{res['performance_residual']:+.4f}",
-          help="Observed win rate minus mathematically expected win rate.",
-      )
-      r4.metric(
-          "Recommended Macro Offset",
-          f"{res['proposed_offset']:+.4f} MMR",
-          help="Regularized adjustment to align with standard benchmark bots.",
-      )
-
-      st.markdown("#### 🤖 Performance Breakdown Per Bot")
-      g_breakdown_rows = []
-      for g in selected_ghost_profiles:
-        g_name = g["ghost_name"]
-        g_mmr = float(g["assigned_mmr"])
-        obs_wr = res["breakdown"].get(g_name, 0.5000)
-        exp_wr_g = np.mean(
-            [1.0 / (1.0 + 10.0 ** ((g_mmr - lr) / 2.0)) for lr in p_ratings]
-        )
-        res_g = obs_wr - exp_wr_g
-        g_breakdown_rows.append({
-            "Bot Benchmark": g_name,
-            "Bot Baseline MMR": f"{g_mmr:.3f}",
-            "Observed Win Rate": f"{obs_wr*100:.2f}%",
-            "Expected Win Rate": f"{exp_wr_g*100:.2f}%",
-            "Residual (Skill Divergence)": f"{res_g:+.4f}",
-        })
-      st.dataframe(pd.DataFrame(g_breakdown_rows), use_container_width=True)
-
-  with h_tab4:
     st.subheader("Social Graph Centrality & Disconnection Telemetry")
     disconnected_players = conn.execute("""
             SELECT p.player_id, p.display_name, l.location_name as city, p.latent_mmr, p.rating_deviation,
@@ -6558,7 +6265,7 @@ elif nav == "🌐 Hawking Engine":
     else:
       st.success("✅ All active players meet minimum graph connectivity.")
 
-  with h_tab5:
+  with h_tab4:
     st.subheader("Hawking Governance, Drift Thresholds & Circuit Breakers")
     cfg_rows = conn.execute("""
             SELECT * FROM global_config 

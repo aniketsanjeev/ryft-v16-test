@@ -3582,9 +3582,7 @@ elif nav == "🗓️ Club Sessions & Mixers":
 
 elif nav == "🧠 Session Logic (V16.2 PROD)":
   st.title("Session Logic Engine (V16.2 PROD)")
-  st.markdown(
-      f"#### `{format_ist_banner()}`"
-  )  # CHANGE 1: Real-time IST Date & Time Banner
+  st.markdown(f"#### `{format_ist_banner()}`")
   st.caption(
       "Multi-stage atomic scheduling, Americano cycles, sit-out management, and"
       " Mexicano phase-gating."
@@ -5279,7 +5277,6 @@ elif nav == "👥 Player Roster & Calibration":
             f" **{format_pr_name(p_data['display_name'], p_data['is_provisional'])}**"
         )
 
-        # CHANGE 4: Show initial category/rating and current category/rating
         m_col1, m_col2, m_col3, m_col4 = st.columns(4)
         m_col1.metric("Initial Rating", f"{init_r:.3f}", init_cat)
         m_col2.metric("Current MMR", f"{curr_r:.3f}", curr_cat)
@@ -5288,7 +5285,6 @@ elif nav == "👥 Player Roster & Calibration":
         )
         m_col4.metric("Uncertainty (RD)", f"{p_data['rating_deviation']:.1f}")
 
-        # CHANGE 4: Plot rating progression graph
         p_history = conn.execute(
             """SELECT logged_at, post_latent_mmr as MMR, post_display_rating as Display 
                FROM match_logs WHERE player_id = ? ORDER BY logged_at ASC""",
@@ -5317,7 +5313,6 @@ elif nav == "👥 Player Roster & Calibration":
               step=5.0,
           )
 
-          # CHANGE 4: Override trust factor & tier
           e_acc = st.number_input(
               "Rating Accuracy / Trust Factor % Override",
               0.0,
@@ -5825,7 +5820,6 @@ elif nav == "🌐 Hawking Engine":
 
   st.markdown("---")
 
-  # RETIRED: Sub-Tab 3 (Synthetic Ghosts) completely removed!
   h_tab1, h_tab2, h_tab3, h_tab4 = st.tabs([
       "🌍 Country & Municipal Hierarchy",
       "⚔️ Cross-Region Parity Analyzer",
@@ -5932,10 +5926,16 @@ elif nav == "🌐 Hawking Engine":
               )
               conn.commit()
 
+              # RESOLVED: Bug-free safe string evaluation for Cold Start & Float medians
+              city_median_disp = (
+                  f"{ci_m['median']:.2f} MMR"
+                  if ci_m["median"] is not None
+                  else "N/A (Cold Start)"
+              )
+
               with st.expander(
-                  f"🏙️ {c_name} — 60d Median:"
-                  f" {ci_m['median']:.2f if ci_m['median'] else 'N/A'} MMR |"
-                  f" Readiness: {diag['readiness_pct']}% [{diag['status']}]"
+                  f"🏙️ {c_name} — 60d Median: {city_median_disp} | Readiness:"
+                  f" {diag['readiness_pct']}% [{diag['status']}]"
               ):
                 m1, m2, m3, m4, m5 = st.columns(5)
                 m1.metric("Active Verified (60d)", f"{act_ver_count} Players")
@@ -5986,12 +5986,20 @@ elif nav == "🌐 Hawking Engine":
                 else:
                   w_c = diag["w_conf"]
                   median_traveler_perf = calculate_true_median(t_deltas_list)
-                  suggested_shift = round(median_traveler_perf * w_c, 4)
+                  suggested_shift = (
+                      round(median_traveler_perf * w_c, 4)
+                      if median_traveler_perf is not None
+                      else 0.0000
+                  )
+                  perf_disp = (
+                      f"{median_traveler_perf:+.4f}"
+                      if median_traveler_perf is not None
+                      else "0.0000"
+                  )
                   st.info(
                       f"✅ **Active Bridge Diffusion:** K={k_bridges} travelers"
                       f" (W_conf={w_c:.4f}). Median traveler delta:"
-                      f" {median_traveler_perf:+.4f} ➔ Proposed Step:"
-                      f" {suggested_shift:+.4f}"
+                      f" {perf_disp} ➔ Proposed Step: {suggested_shift:+.4f}"
                   )
 
                 st.markdown("---")
@@ -6169,17 +6177,19 @@ elif nav == "🌐 Hawking Engine":
       with p1:
         st.markdown(f"**{reg_a_name} Profile**")
         st.write(f"• Verified Players (RD ≤ 100): `{len(ratings_a)}`")
+        med_a = calculate_true_median(ratings_a)
         st.write(
-            f"• Median MMR: `{calculate_true_median(ratings_a):.4f}`"
-            if ratings_a
+            f"• Median MMR: `{med_a:.4f}`"
+            if med_a is not None
             else "• Median MMR: `N/A`"
         )
       with p2:
         st.markdown(f"**{reg_b_name} Profile**")
         st.write(f"• Verified Players (RD ≤ 100): `{len(ratings_b)}`")
+        med_b = calculate_true_median(ratings_b)
         st.write(
-            f"• Median MMR: `{calculate_true_median(ratings_b):.4f}`"
-            if ratings_b
+            f"• Median MMR: `{med_b:.4f}`"
+            if med_b is not None
             else "• Median MMR: `N/A`"
         )
 

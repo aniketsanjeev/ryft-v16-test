@@ -1283,6 +1283,196 @@ init_db()
 
 
 # ==============================================================================
+# TRAILING 60-DAY ROLLING MEDIAN & METRIC DERIVATION HELPERS
+# ==============================================================================
+def calculate_true_median(values: list[float]):
+  if not values:
+    return None
+  sorted_vals = sorted(values)
+  n = len(sorted_vals)
+  mid = n // 2
+  if n % 2 == 1:
+    return float(sorted_vals[mid])
+  else:
+    return float((sorted_vals[mid - 1] + sorted_vals[mid]) / 2.0)
+
+
+def compute_60d_venue_metrics(
+    venue_id: str, conn, cutoff_ts: str = None
+) -> dict:
+  if cutoff_ts is None:
+    cutoff_ts = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+
+  q = """
+        SELECT DISTINCT p.player_id, p.latent_mmr 
+        FROM matches m
+        JOIN players p ON p.player_id IN (m.team_a_p1_id, m.team_a_p2_id, m.team_b_p1_id, m.team_b_p2_id)
+        WHERE m.venue_id = ? 
+          AND m.match_timestamp >= ?
+          AND p.rating_deviation <= 100.0
+          AND p.is_quarantined = 0
+          AND p.calibration_tier != 'INACTIVE'
+    """
+  rows = conn.execute(q, (venue_id, cutoff_ts)).fetchall()
+  ratings = [
+      float(r["latent_mmr"]) for r in rows if r["latent_mmr"] is not None
+  ]
+  count = len(ratings)
+  med = calculate_true_median(ratings)
+  return {"median": med, "liquidity": count, "ratings": ratings}
+
+
+def compute_60d_city_metrics(city_id: str, conn, cutoff_ts: str = None) -> dict:
+  if cutoff_ts is None:
+    cutoff_ts = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+
+  q = """
+        SELECT DISTINCT p.player_id, p.latent_mmr 
+        FROM players p
+        WHERE p.rating_deviation <= 100.0
+          AND p.is_quarantined = 0
+          AND p.calibration_tier != 'INACTIVE'
+          AND (
+            p.player_id IN (
+              SELECT m.team_a_p1_id FROM matches m JOIN venues v ON m.venue_id = v.venue_id WHERE v.city_id = ? AND m.match_timestamp >= ?
+              UNION
+              SELECT m.team_a_p2_id FROM matches m JOIN venues v ON m.venue_id = v.venue_id WHERE v.city_id = ? AND m.match_timestamp >= ?
+              UNION
+              SELECT m.team_b_p1_id FROM matches m JOIN venues v ON m.venue_id = v.venue_id WHERE v.city_id = ? AND m.match_timestamp >= ?
+              UNION
+              SELECT m.team_b_p2_id FROM matches m JOIN venues v ON m.venue_id = v.venue_id WHERE v.city_id = ? AND m.match_timestamp >= ?
+            )
+            OR (
+              p.home_city_id = ?
+              AND p.player_id IN (
+                SELECT m.team_a_p1_id FROM matches m WHERE m.match_timestamp >= ?
+                UNION
+                SELECT m.team_a_p2_id FROM matches m WHERE m.match_timestamp >= ?
+                UNION
+                SELECT m.team_b_p1_id FROM matches m WHERE m.match_timestamp >= ?
+                UNION
+                SELECT m.team_b_p2_id FROM matches m WHERE m.match_timestamp >= ?
+              )
+            )
+          )
+    """
+  params = [
+      city_id,
+      cutoff_ts,
+      city_id,
+      cutoff_ts,
+      city_id,
+      cutoff_ts,
+      city_id,
+      cutoff_ts,
+      city_id,
+      cutoff_ts,
+      cutoff_ts,
+      cutoff_ts,
+      cutoff_ts,
+  ]
+  rows = conn.execute(q, params).fetchall()
+  ratings = [
+      float(r["latent_mmr"]) for r in rows if r["latent_mmr"] is not None
+  ]
+  count = len(ratings)
+  med = calculate_true_median(ratings)
+  p75 = float(np.percentile(ratings, 75)) if ratings else None
+  delta_anchor = round(med - 3.0000, 4) if med is not None else None
+  return {
+      "median": med,
+      "p75": p75,
+      "liquidity": count,
+      "delta_anchor": delta_anchor,
+      "ratings": ratings,
+  }
+
+
+def compute_60d_country_metrics(
+    country_code: str, conn, cutoff_ts: str = None
+) -> dict:
+  if cutoff_ts is None:
+    cutoff_ts = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+
+  q = """
+        SELECT DISTINCT p.player_id, p.latent_mmr 
+        FROM players p
+        WHERE p.rating_deviation <= 100.0
+          AND p.is_quarantined = 0
+          AND p.calibration_tier != 'INACTIVE'
+          AND (
+            p.player_id IN (
+              SELECT m.team_a_p1_id FROM matches m JOIN venues v ON m.venue_id = v.venue_id WHERE v.country_code = ? AND m.match_timestamp >= ?
+              UNION
+              SELECT m.team_a_p2_id FROM matches m JOIN venues v ON m.venue_id = v.venue_id WHERE v.country_code = ? AND m.match_timestamp >= ?
+              UNION
+              SELECT m.team_b_p1_id FROM matches m JOIN venues v ON m.venue_id = v.venue_id WHERE v.country_code = ? AND m.match_timestamp >= ?
+              UNION
+              SELECT m.team_b_p2_id FROM matches m JOIN venues v ON m.venue_id = v.venue_id WHERE v.country_code = ? AND m.match_timestamp >= ?
+            )
+            OR (
+              p.home_country_code = ?
+              AND p.player_id IN (
+                SELECT m.team_a_p1_id FROM matches m WHERE m.match_timestamp >= ?
+                UNION
+                SELECT m.team_a_p2_id FROM matches m WHERE m.match_timestamp >= ?
+                UNION
+                SELECT m.team_b_p1_id FROM matches m WHERE m.match_timestamp >= ?
+                UNION
+                SELECT m.team_b_p2_id FROM matches m WHERE m.match_timestamp >= ?
+              )
+            )
+          )
+    """
+  params = [
+      country_code,
+      cutoff_ts,
+      country_code,
+      cutoff_ts,
+      country_code,
+      cutoff_ts,
+      country_code,
+      cutoff_ts,
+      country_code,
+      cutoff_ts,
+      cutoff_ts,
+      cutoff_ts,
+      cutoff_ts,
+  ]
+  rows = conn.execute(q, params).fetchall()
+  ratings = [
+      float(r["latent_mmr"]) for r in rows if r["latent_mmr"] is not None
+  ]
+  count = len(ratings)
+  med = calculate_true_median(ratings)
+  delta_anchor = round(med - 3.0000, 4) if med is not None else None
+
+  if med is None:
+    drift_status = "COLD START"
+    badge_color = "#94a3b8"
+  else:
+    abs_drift = abs(delta_anchor)
+    if abs_drift <= 0.0500:
+      drift_status = "BALANCED"
+      badge_color = "#22c55e"
+    elif abs_drift <= 0.1000:
+      drift_status = "MILD DRIFT"
+      badge_color = "#eab308"
+    else:
+      drift_status = "CIRCUIT WARNING"
+      badge_color = "#ef4444"
+
+  return {
+      "median": med,
+      "liquidity": count,
+      "delta_anchor": delta_anchor,
+      "drift_status": drift_status,
+      "badge_color": badge_color,
+      "ratings": ratings,
+  }
+
+
+# ==============================================================================
 # HAWKING MATHEMATICAL & STATISTICAL HELPERS (BITS 21 & 22)
 # ==============================================================================
 def compute_decay_multiplier(rating: float) -> float:
@@ -3468,7 +3658,7 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
   st.title("Session Logic Engine (V16.2 PROD)")
   st.markdown(
       f"#### `{format_ist_banner()}`"
-  )  # CHANGE 1: Real-time IST Date & Time
+  )  # CHANGE 1: Real-time IST Date & Time Banner
   st.caption(
       "Multi-stage atomic scheduling, Americano cycles, sit-out management, and"
       " Mexicano phase-gating."
@@ -5260,10 +5450,14 @@ elif nav == "👥 Player Roster & Calibration":
   conn.close()
 
 # ==============================================================================
-# 🏢 VENUES & REGIONS (CHANGE 5: CASCADING COUNTRY -> CITY -> VENUE DRILLDOWN)
+# 🏢 VENUES & REGIONS (TRAILING 60-DAY ROLLING MEDIANS & CASCADING FILTERS)
 # ==============================================================================
 elif nav == "🏢 Venues & Regions":
   st.title("Geographical Ecosystem & Regional Drill-Downs")
+  st.caption(
+      "Dynamic trailing 60-day rolling Median MMR architecture across Venues,"
+      " Cities, and Countries."
+  )
   conn = get_db_connection()
 
   c1, c2, c3, c4 = st.columns(4)
@@ -5384,8 +5578,11 @@ elif nav == "🏢 Venues & Regions":
       "Inspect Hierarchy By:", ["Countries", "Cities", "Venues"], horizontal=True
   )
 
+  # --------------------------------------------------------------------------
+  # COUNTRIES SUB-TAB (TRAILING 60-DAY ROLLING NATIONAL MEDIAN)
+  # --------------------------------------------------------------------------
   if view_mode == "Countries":
-    for co in conn.execute("""
+    all_co = conn.execute("""
             SELECT l.location_id, l.location_name, l.country_code,
                    COUNT(DISTINCT v.venue_id) as total_venues,
                    SUM(v.court_count) as total_courts,
@@ -5398,19 +5595,51 @@ elif nav == "🏢 Venues & Regions":
             LEFT JOIN matches m ON v.venue_id = m.venue_id
             WHERE l.location_type = 'COUNTRY' AND l.is_active = 1
             GROUP BY l.location_id
-        """).fetchall():
+        """).fetchall()
+
+    for co in all_co:
+      co_m = compute_60d_country_metrics(co["country_code"], conn)
+
+      nat_median_display = (
+          f"{co_m['median']:.2f} MMR"
+          if co_m["median"] is not None
+          else "N/A (Cold Start)"
+      )
+      anchor_delta_display = (
+          f"{co_m['delta_anchor']:+.2f} vs Global Target (3.00)"
+          if co_m["delta_anchor"] is not None
+          else "N/A"
+      )
+
       with st.expander(
-          f"🌍 {co['location_name']} ({co['country_code']}) • Players:"
-          f" {co['total_players']} | Matches: {co['total_matches']}"
+          f"🌍 {co['location_name']} ({co['country_code']}) • 60d Median:"
+          f" {nat_median_display} | Status: [{co_m['drift_status']}]"
       ):
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Venues", co["total_venues"])
-        k2.metric("Courts", co["total_courts"] or 0)
-        k3.metric("Matches Played", co["total_matches"])
-        k4.metric("Country Bridges", co["country_bridges"])
+        k1.metric(
+            "60-Day National Median",
+            nat_median_display,
+            help="Median of verified players active in the past 60 days.",
+        )
+        k2.markdown(
+            "**Macro Drift Status**<br/><span style='display:inline-block;"
+            f" padding:4px 8px; border-radius:4px; background:{co_m['badge_color']};"
+            f" color:white; font-weight:bold;'>{co_m['drift_status']}</span>",
+            unsafe_allow_html=True,
+        )
+        k3.metric("Anchor Deviation", anchor_delta_display)
+        k4.metric("Active Verified Liquidity", f"{co_m['liquidity']} Players")
 
+        s1, s2, s3, s4 = st.columns(4)
+        s1.metric("Venues Operating", co["total_venues"])
+        s2.metric("Courts", co["total_courts"] or 0)
+        s3.metric("Lifetime Matches", co["total_matches"])
+        s4.metric("Country Bridges", co["country_bridges"])
+
+  # --------------------------------------------------------------------------
+  # CITIES SUB-TAB (TRAILING 60-DAY MUNICIPAL MEDIAN, P75, ANCHOR DEVIATION)
+  # --------------------------------------------------------------------------
   elif view_mode == "Cities":
-    # CHANGE 5: Filter cities by Country
     all_countries = conn.execute(
         "SELECT location_id, location_name, country_code FROM locations WHERE"
         " location_type = 'COUNTRY' AND is_active = 1 ORDER BY location_name"
@@ -5443,18 +5672,55 @@ elif nav == "🏢 Venues & Regions":
     city_query += " GROUP BY c.location_id ORDER BY c.location_name ASC"
 
     for ci in conn.execute(city_query, city_params).fetchall():
+      ci_m = compute_60d_city_metrics(ci["location_id"], conn)
+
+      city_median_disp = (
+          f"{ci_m['median']:.2f} MMR"
+          if ci_m["median"] is not None
+          else "N/A (Cold Start)"
+      )
+      p75_disp = (
+          f"{ci_m['p75']:.2f} MMR" if ci_m["p75"] is not None else "N/A"
+      )
+      anchor_dev_disp = (
+          f"{ci_m['delta_anchor']:+.2f} vs Global Target"
+          if ci_m["delta_anchor"] is not None
+          else "N/A"
+      )
+
       with st.expander(
-          f"🏙️ {ci['location_name']}, {ci['parent_country']} • Players:"
-          f" {ci['c_players']} | Matches: {ci['c_matches']}"
+          f"🏙️ {ci['location_name']}, {ci['parent_country']} • 60d Median:"
+          f" {city_median_disp} | P75: {p75_disp}"
       ):
         q1, q2, q3, q4 = st.columns(4)
-        q1.metric("Venues", ci["c_venues"])
-        q2.metric("Courts", ci["c_courts"] or 0)
-        q3.metric("City Bridges", ci["city_bridges"])
-        q4.metric("Hawking Offset", f"{ci['hawking_offset']:+.4f}")
+        q1.metric(
+            "60-Day City Median",
+            city_median_disp,
+            help="Mathematical 50th percentile of verified residents in the"
+            " trailing 60 days.",
+        )
+        q2.metric(
+            "Competitive Ceiling (P75)",
+            p75_disp,
+            help="Top-quartile boundary MMR representing high-performance depth.",
+        )
+        q3.metric(
+            "Anchor Deviation",
+            anchor_dev_disp,
+            help="Divergence from the Global Anchor Target of 3.0000.",
+        )
+        q4.metric("Active Verified Liquidity", f"{ci_m['liquidity']} Players")
 
+        c_sub1, c_sub2, c_sub3, c_sub4 = st.columns(4)
+        c_sub1.metric("Venues Operating", ci["c_venues"])
+        c_sub2.metric("Courts", ci["c_courts"] or 0)
+        c_sub3.metric("City Bridges", ci["city_bridges"])
+        c_sub4.metric("Hawking Offset", f"{ci['hawking_offset']:+.4f}")
+
+  # --------------------------------------------------------------------------
+  # VENUES SUB-TAB (TRAILING 60-DAY VENUE MEDIAN, SKILL SKEW, LIQUIDITY)
+  # --------------------------------------------------------------------------
   elif view_mode == "Venues":
-    # CHANGE 5: Cascading Country -> City -> Venue selection
     all_countries = conn.execute(
         "SELECT location_id, location_name, country_code FROM locations WHERE"
         " location_type = 'COUNTRY' AND is_active = 1 ORDER BY location_name"
@@ -5494,6 +5760,8 @@ elif nav == "🏢 Venues & Regions":
             for c in cities_in_co
             if c["location_name"] == sel_ci
         ][0]
+        ci_metrics = compute_60d_city_metrics(target_city_id, conn)
+
         venues_in_city = conn.execute(
             """SELECT v.*, l.location_name as city, co.location_name as country,
                       COUNT(DISTINCT ml.player_id) as v_players,
@@ -5514,17 +5782,55 @@ elif nav == "🏢 Venues & Regions":
         else:
           st.markdown(f"#### 🏟️ Venues in {sel_ci}, {sel_co}")
           for v in venues_in_city:
+            vm = compute_60d_venue_metrics(v["venue_id"], conn)
+
+            v_med_disp = (
+                f"{vm['median']:.2f} MMR"
+                if vm["median"] is not None
+                else "N/A (Cold Start)"
+            )
+
+            # Venue Skill Skew vs City
+            if vm["median"] is not None and ci_metrics["median"] is not None:
+              skew_val = vm["median"] - ci_metrics["median"]
+              skew_disp = f"{skew_val:+.2f} vs City"
+            else:
+              skew_disp = "N/A"
+
             with st.expander(
-                f"🏟️ {v['venue_name']} • Courts: {v['court_count']} | Matches:"
-                f" {v['total_matches_played']}"
+                f"🏟️ {v['venue_name']} • 60d Median: {v_med_disp} | Skew:"
+                f" {skew_disp}"
             ):
               g1, g2, g3, g4 = st.columns(4)
-              g1.metric("Unique Players", v["v_players"])
-              g2.metric("Venue Bridges", v["v_bridges"])
-              g3.metric("City Bridges", v["city_bridge_matches_count"])
+              g1.metric(
+                  "60-Day Venue Median",
+                  v_med_disp,
+                  help=(
+                      f"{vm['liquidity']} active verified players contributed"
+                      " in the last 60 days."
+                  ),
+              )
+              g2.metric(
+                  "Venue Skill Skew",
+                  skew_disp,
+                  help=(
+                      "Delta between this Venue Median and its parent City"
+                      " Median."
+                  ),
+              )
+              g3.metric(
+                  "Active Verified Liquidity", f"{vm['liquidity']} Players"
+              )
               g4.metric(
-                  "Verified Desk",
+                  "Verified Authority",
                   "ACTIVE" if v["is_verified"] else "UNVERIFIED",
+              )
+
+              sub1, sub2, sub3 = st.columns(3)
+              sub1.metric("Physical Courts", v["court_count"])
+              sub2.metric("Lifetime Matches", v["total_matches_played"])
+              sub3.metric(
+                  "City Bridge Matches", v["city_bridge_matches_count"]
               )
   conn.close()
 
@@ -5623,26 +5929,26 @@ elif nav == "🌐 Hawking Engine":
         co_name = co["location_name"]
         co_code = co["country_code"]
 
-        co_ratings = [
-            float(r[0])
-            for r in conn.execute(
-                """SELECT latent_mmr FROM players 
-                   WHERE home_country_code = ? AND rating_deviation <= 100.0 AND calibration_tier != 'INACTIVE'""",
-                (co_code,),
-            ).fetchall()
-        ]
-        co_median = float(np.median(co_ratings)) if co_ratings else 0.0000
+        co_m = compute_60d_country_metrics(co_code, conn)
+        nat_median_display = (
+            f"{co_m['median']:.2f} MMR"
+            if co_m["median"] is not None
+            else "N/A (Cold Start)"
+        )
 
         with st.expander(
-            f"🌍 {co_name} ({co_code}) — {len(co_ratings)} Verified Players |"
-            f" National Median: {co_median:.4f} MMR"
+            f"🌍 {co_name} ({co_code}) — 60d Median: {nat_median_display} |"
+            f" Status: [{co_m['drift_status']}]"
         ):
           ck1, ck2, ck3, ck4 = st.columns(4)
           ck1.metric("Venues Operating", co["total_venues"])
-          ck2.metric("National Median MMR", f"{co_median:.4f}")
+          ck2.metric("60-Day National Median", nat_median_display)
           ck3.metric("Country Bridges", co["country_bridges"])
-          ck4.metric(
-              "Deviation from Anchor", f"{(co_median - 3.0000):+.4f} vs 3.000"
+          ck4.markdown(
+              "**Macro Drift Status**<br/><span style='display:inline-block;"
+              f" padding:4px 8px; border-radius:4px; background:{co_m['badge_color']};"
+              f" color:white; font-weight:bold;'>{co_m['drift_status']}</span>",
+              unsafe_allow_html=True,
           )
 
           st.markdown("#### Municipal Clusters in " + co_name)
@@ -5670,15 +5976,8 @@ elif nav == "🌐 Hawking Engine":
               c_name = ci["location_name"]
               n_matches = ci["total_matches"]
 
-              act_ver_count = conn.execute(
-                  """
-                                SELECT COUNT(DISTINCT p.player_id) 
-                                FROM players p 
-                                JOIN match_logs ml ON p.player_id = ml.player_id
-                                WHERE p.home_city_id = ? AND p.rating_deviation <= 100.0 AND p.calibration_tier != 'INACTIVE'
-                            """,
-                  (cid,),
-              ).fetchone()[0]
+              ci_m = compute_60d_city_metrics(cid, conn)
+              act_ver_count = ci_m["liquidity"]
 
               k_bridges = conn.execute(
                   """
@@ -5703,11 +6002,12 @@ elif nav == "🌐 Hawking Engine":
               conn.commit()
 
               with st.expander(
-                  f"🏙️ {c_name} — Readiness: {diag['readiness_pct']}%"
-                  f" [{diag['status']}]"
+                  f"🏙️ {c_name} — 60d Median:"
+                  f" {ci_m['median']:.2f if ci_m['median'] else 'N/A'} MMR |"
+                  f" Readiness: {diag['readiness_pct']}% [{diag['status']}]"
               ):
                 m1, m2, m3, m4, m5 = st.columns(5)
-                m1.metric("Active Verified", f"{act_ver_count} (Core)")
+                m1.metric("Active Verified (60d)", f"{act_ver_count} Players")
                 m2.metric("Depth Ratio", f"{diag['activity_depth']:.1f} m/p")
                 m3.metric("Bridge Nodes (K)", k_bridges)
                 m4.metric("Intransitivity", f"{it_val:.4f}")
@@ -5725,12 +6025,7 @@ elif nav == "🌐 Hawking Engine":
                     key=f"mode_{cid}",
                 )
 
-                local_ratings_rows = conn.execute(
-                    """SELECT latent_mmr FROM players 
-                                    WHERE home_city_id = ? AND rating_deviation <= 100.0 AND calibration_tier != 'INACTIVE'""",
-                    (cid,),
-                ).fetchall()
-                local_ratings = [float(r[0]) for r in local_ratings_rows]
+                local_ratings = ci_m["ratings"]
                 suggested_shift = 0.0000
 
                 if "Path A" in calc_mode:

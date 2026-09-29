@@ -2889,7 +2889,7 @@ def build_pdf_document():
   story.append(
       Paragraph(
           "Dual-Engine Architecture: Einstein (Micro Physics) & Hawking (Macro"
-          " Diffusion & Supervised Sandbox)",
+          " Diffusion & Empirical Topology)",
           body_style,
       )
   )
@@ -3327,7 +3327,6 @@ elif nav == "🎾 Log Matches":
   )
 
   if do_dry or do_save:
-    # CHANGE 3B: Validate Scorecard Legality
     is_valid_score, score_err = validate_format_score(
         sel_f["format_id"], sets_data, gw, gl, sa, sb, fid_map
     )
@@ -3582,7 +3581,9 @@ elif nav == "🗓️ Club Sessions & Mixers":
 
 elif nav == "🧠 Session Logic (V16.2 PROD)":
   st.title("Session Logic Engine (V16.2 PROD)")
-  st.markdown(f"#### `{format_ist_banner()}`")
+  st.markdown(
+      f"#### `{format_ist_banner()}`"
+  )  # Real-time IST Date & Time Banner
   st.caption(
       "Multi-stage atomic scheduling, Americano cycles, sit-out management, and"
       " Mexicano phase-gating."
@@ -5820,6 +5821,7 @@ elif nav == "🌐 Hawking Engine":
 
   st.markdown("---")
 
+  # RETIRED: Sub-Tab 3 (Synthetic Ghosts) completely removed!
   h_tab1, h_tab2, h_tab3, h_tab4 = st.tabs([
       "🌍 Country & Municipal Hierarchy",
       "⚔️ Cross-Region Parity Analyzer",
@@ -5926,7 +5928,6 @@ elif nav == "🌐 Hawking Engine":
               )
               conn.commit()
 
-              # RESOLVED: Bug-free safe string evaluation for Cold Start & Float medians
               city_median_disp = (
                   f"{ci_m['median']:.2f} MMR"
                   if ci_m["median"] is not None
@@ -6249,31 +6250,147 @@ elif nav == "🌐 Hawking Engine":
 
   with h_tab3:
     st.subheader("Social Graph Centrality & Disconnection Telemetry")
-    disconnected_players = conn.execute("""
-            SELECT p.player_id, p.display_name, l.location_name as city, p.latent_mmr, p.rating_deviation,
+
+    # Segmented Cascading Filters
+    all_countries_raw = conn.execute(
+        "SELECT location_id, location_name, country_code FROM locations WHERE"
+        " location_type = 'COUNTRY' AND is_active = 1 ORDER BY location_name"
+    ).fetchall()
+    co_opts = ["-- All Countries --"] + [c["location_name"] for c in all_countries_raw]
+
+    gf_col1, gf_col2, gf_col3 = st.columns(3)
+    sel_g_co = gf_col1.selectbox("Filter Country", co_opts, key="sb_g_co")
+
+    if sel_g_co != "-- All Countries --":
+      p_co_code = [
+          c["country_code"]
+          for c in all_countries_raw
+          if c["location_name"] == sel_g_co
+      ][0]
+      p_co_id = [
+          c["location_id"]
+          for c in all_countries_raw
+          if c["location_name"] == sel_g_co
+      ][0]
+      cities_in_co = conn.execute(
+          "SELECT location_id, location_name FROM locations WHERE location_type"
+          " = 'CITY' AND parent_id = ? AND is_active = 1 ORDER BY"
+          " location_name",
+          (p_co_id,),
+      ).fetchall()
+      ci_opts = ["-- All Cities --"] + [c["location_name"] for c in cities_in_co]
+    else:
+      cities_in_co = conn.execute(
+          "SELECT location_id, location_name FROM locations WHERE location_type"
+          " = 'CITY' AND is_active = 1 ORDER BY location_name"
+      ).fetchall()
+      ci_opts = ["-- All Cities --"] + [c["location_name"] for c in cities_in_co]
+
+    sel_g_ci = gf_col2.selectbox("Filter City", ci_opts, key="sb_g_ci")
+
+    venues_query = "SELECT venue_id, venue_name FROM venues WHERE is_active = 1"
+    v_params = []
+    if sel_g_ci != "-- All Cities --":
+      target_c_id = [
+          c["location_id"]
+          for c in cities_in_co
+          if c["location_name"] == sel_g_ci
+      ][0]
+      venues_query += " AND city_id = ?"
+      v_params.append(target_c_id)
+    venues_query += " ORDER BY venue_name"
+    venues_list = conn.execute(venues_query, v_params).fetchall()
+    v_opts = [
+        "-- All Players --",
+        "Assigned Home Venue Only",
+        "Unassigned / Free Agents (No Home Venue)",
+    ] + [v["venue_name"] for v in venues_list]
+
+    sel_g_v = gf_col3.selectbox("Filter Venue Status", v_opts, key="sb_g_v")
+
+    # Dynamic SQL construction
+    disc_sql = """
+            SELECT p.player_id, p.display_name, p.is_provisional, p.calibration_tier,
+                   l.location_name as city, co.location_name as country, v.venue_name,
+                   p.latent_mmr, p.rating_deviation, p.rating_accuracy_pct, p.unique_opponents_count, p.home_venue_id,
                    COUNT(ml.log_id) as total_games
             FROM players p
-            JOIN locations l ON p.home_city_id = l.location_id
+            LEFT JOIN locations l ON p.home_city_id = l.location_id
+            LEFT JOIN locations co ON l.parent_id = co.location_id
+            LEFT JOIN venues v ON p.home_venue_id = v.venue_id
             LEFT JOIN match_logs ml ON p.player_id = ml.player_id
             WHERE p.calibration_tier != 'INACTIVE'
+        """
+    disc_params = []
+
+    if sel_g_co != "-- All Countries --":
+      disc_sql += " AND co.location_name = ?"
+      disc_params.append(sel_g_co)
+    if sel_g_ci != "-- All Cities --":
+      disc_sql += " AND l.location_name = ?"
+      disc_params.append(sel_g_ci)
+    if sel_g_v == "Assigned Home Venue Only":
+      disc_sql += " AND (p.home_venue_id IS NOT NULL AND p.home_venue_id != '')"
+    elif sel_g_v == "Unassigned / Free Agents (No Home Venue)":
+      disc_sql += " AND (p.home_venue_id IS NULL OR p.home_venue_id = '')"
+    elif sel_g_v != "-- All Players --":
+      disc_sql += " AND v.venue_name = ?"
+      disc_params.append(sel_g_v)
+
+    disc_sql += """
             GROUP BY p.player_id
-            HAVING total_games < 3
-        """).fetchall()
-    if disconnected_players:
-      st.warning(
-          f"⚠️ Found {len(disconnected_players)} players with low network"
-          " connectivity (fewer than 3 recorded games):"
-      )
-      disc_data = [{
-          "Player": p["display_name"],
-          "City": p["city"],
-          "MMR": f"{p['latent_mmr']:.4f}",
-          "RD": f"{p['rating_deviation']:.1f}",
-          "Games": p["total_games"],
-      } for p in disconnected_players]
-      st.dataframe(pd.DataFrame(disc_data), use_container_width=True)
+            HAVING total_games < 3 OR p.unique_opponents_count < 3
+            ORDER BY total_games ASC, p.unique_opponents_count ASC
+        """
+    disc_rows = conn.execute(disc_sql, disc_params).fetchall()
+
+    # Diagnostic Summary Counters
+    total_disc_count = len(disc_rows)
+    isolated_venues = set(
+        r["venue_name"] for r in disc_rows if r["venue_name"] is not None
+    )
+
+    sc1, sc2, sc3 = st.columns(3)
+    sc1.metric("Disconnected Players", total_disc_count)
+    sc2.metric("Isolated Venues Impacted", len(isolated_venues))
+    sc3.metric(
+        "Current Scope",
+        f"{sel_g_ci if sel_g_ci != '-- All Cities --' else (sel_g_co if sel_g_co != '-- All Countries --' else 'Global')}",
+    )
+
+    if not disc_rows:
+      st.success("✅ No disconnected players found in this segment.")
     else:
-      st.success("✅ All active players meet minimum graph connectivity.")
+      tabular_data = []
+      for r in disc_rows:
+        tabular_data.append({
+            "Player": format_pr_name(r["display_name"], r["is_provisional"]),
+            "Tier": r["calibration_tier"],
+            "Country": r["country"] or "N/A",
+            "City": r["city"] or "N/A",
+            "Home Venue": r["venue_name"] or "None (Free Agent)",
+            "MMR": f"{r['latent_mmr']:.3f}",
+            "RD": f"{r['rating_deviation']:.1f}",
+            "Accuracy": f"{r['rating_accuracy_pct']:.1f}%",
+            "Matches Played": r["total_games"],
+            "Unique Opponents": r["unique_opponents_count"],
+            "Network Risk": (
+                "High Disconnection"
+                if r["total_games"] < 2
+                else "Moderate Clique Risk"
+            ),
+        })
+      df_disc = pd.DataFrame(tabular_data)
+      st.dataframe(df_disc, use_container_width=True)
+
+      st.download_button(
+          "⬇️ Export Disconnected Players List (CSV)",
+          data=df_disc.to_csv(index=False),
+          file_name=(
+              f"Disconnected_Players_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+          ),
+          mime="text/csv",
+      )
 
   with h_tab4:
     st.subheader("Hawking Governance, Drift Thresholds & Circuit Breakers")

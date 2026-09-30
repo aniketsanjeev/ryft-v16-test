@@ -127,13 +127,18 @@ def init_db():
         average_player_mmr REAL DEFAULT 3.000, is_active INTEGER DEFAULT 1, created_at TEXT
     )""")
 
-  # Check if rating_categories needs migration from single category_name PK
+  # Ensure rating_categories supports dual demographic primary key (category_id)
   c.execute("PRAGMA table_info(rating_categories);")
   r_cols = {row[1]: row for row in c.fetchall()}
   needs_rebuild = False
   if r_cols:
     pk_cols = [row[1] for row in r_cols.values() if row[5] > 0]
     if pk_cols != ["category_id"]:
+      needs_rebuild = True
+
+  if not needs_rebuild and r_cols:
+    cat_count = c.execute("SELECT COUNT(*) FROM rating_categories").fetchone()[0]
+    if cat_count < 14:
       needs_rebuild = True
 
   if needs_rebuild or not r_cols:
@@ -234,21 +239,21 @@ def init_db():
       c, "locations", "intransitivity_index", "REAL DEFAULT 0.0"
   )
 
-  # SEED DEFAULT RATING CATEGORIES FOR BOTH MALE AND FEMALE
+  # SEED DEFAULT CATEGORIES: Discrete .999 thresholds for clean promotions
   default_cats = [
-      ("CAT_M_BEG", "MALE", "Beginner", 0.000, 1.000, 1, 1.00),
-      ("CAT_M_BEG_PLUS", "MALE", "Beginner+", 1.000, 2.000, 2, 1.00),
-      ("CAT_M_INT", "MALE", "Intermediate", 2.000, 3.500, 3, 1.00),
-      ("CAT_M_INT_PLUS", "MALE", "Intermediate+", 3.500, 4.500, 4, 1.00),
-      ("CAT_M_ADV", "MALE", "Advanced", 4.500, 5.500, 5, 1.00),
-      ("CAT_M_PRO", "MALE", "Pro", 5.500, 6.300, 6, 1.00),
+      ("CAT_M_BEG", "MALE", "Beginner", 0.000, 0.999, 1, 1.00),
+      ("CAT_M_BEG_PLUS", "MALE", "Beginner+", 1.000, 1.999, 2, 1.00),
+      ("CAT_M_INT", "MALE", "Intermediate", 2.000, 3.499, 3, 1.00),
+      ("CAT_M_INT_PLUS", "MALE", "Intermediate+", 3.500, 4.499, 4, 1.00),
+      ("CAT_M_ADV", "MALE", "Advanced", 4.500, 5.499, 5, 1.00),
+      ("CAT_M_PRO", "MALE", "Pro", 5.500, 6.299, 6, 1.00),
       ("CAT_M_ELITE", "MALE", "Elite", 6.300, 7.000, 7, 1.00),
-      ("CAT_F_BEG", "FEMALE", "Beginner", 0.000, 1.000, 1, 1.00),
-      ("CAT_F_BEG_PLUS", "FEMALE", "Beginner+", 1.000, 1.750, 2, 1.00),
-      ("CAT_F_INT", "FEMALE", "Intermediate", 1.750, 2.750, 3, 1.00),
-      ("CAT_F_INT_PLUS", "FEMALE", "Intermediate+", 2.750, 3.500, 4, 1.00),
-      ("CAT_F_ADV", "FEMALE", "Advanced", 3.500, 4.500, 5, 1.00),
-      ("CAT_F_PRO", "FEMALE", "Pro", 4.500, 5.500, 6, 1.00),
+      ("CAT_F_BEG", "FEMALE", "Beginner", 0.000, 0.999, 1, 1.00),
+      ("CAT_F_BEG_PLUS", "FEMALE", "Beginner+", 1.000, 1.749, 2, 1.00),
+      ("CAT_F_INT", "FEMALE", "Intermediate", 1.750, 2.749, 3, 1.00),
+      ("CAT_F_INT_PLUS", "FEMALE", "Intermediate+", 2.750, 3.499, 4, 1.00),
+      ("CAT_F_ADV", "FEMALE", "Advanced", 3.500, 4.499, 5, 1.00),
+      ("CAT_F_PRO", "FEMALE", "Pro", 4.500, 5.499, 6, 1.00),
       ("CAT_F_ELITE", "FEMALE", "Elite", 5.500, 7.000, 7, 1.00),
   ]
   for cid, gdr, cname, cmin, cmax, s_ord, spd in default_cats:
@@ -1740,22 +1745,28 @@ class RyftV16:
       conn.close()
 
     if not cats:
-      return "Intermediate", 2.000, 3.500, 1.00
+      return "Intermediate", 2.000, 3.499, 1.00
 
-    for c in cats:
+    for i, c in enumerate(cats):
       c_min = float(c["min_rating"])
       c_max = float(c["max_rating"])
-      c_order = int(c["sort_order"])
-      # Last tier includes upper boundary (<= max)
-      if (c_order == len(cats) and c_min <= r_val <= c_max) or (
-          c_min <= r_val < c_max
-      ):
-        return (
-            c["category_name"],
-            c_min,
-            c_max,
-            float(c["speed_multiplier"] or 1.00),
-        )
+      if i == len(cats) - 1:
+        if r_val >= c_min:
+          return (
+              c["category_name"],
+              c_min,
+              c_max,
+              float(c["speed_multiplier"] or 1.00),
+          )
+      else:
+        next_min = float(cats[i + 1]["min_rating"])
+        if c_min <= r_val < next_min:
+          return (
+              c["category_name"],
+              c_min,
+              c_max,
+              float(c["speed_multiplier"] or 1.00),
+          )
 
     if r_val <= float(cats[0]["min_rating"]):
       return (
@@ -2113,7 +2124,6 @@ class RyftV16:
     except Exception:
       match_dt = datetime.now(timezone.utc)
 
-    # Retroactive Lookback Evaluation
     now_utc = datetime.now(timezone.utc)
     is_retroactive_commit = False
     if bool(cfg.get("ENABLE_RETROACTIVE_INGESTION", 1)):
@@ -3425,7 +3435,7 @@ elif nav == "🎾 Log Matches":
       tg = sel_f["target_games"] or 6
       gw = rg1.number_input("Team A Games", 0, 30, tg)
       gl = rg2.number_input("Team B Games", 0, 30, max(0, tg - 2))
-      sa, sb = gw, gl  # Store exact game score in database
+      sa, sb = gw, gl
       sets_data.append((gw, gl))
 
     elif cat in ("AMERICANO", "MEXICANO"):
@@ -3876,14 +3886,14 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
             hdr1, hdr2 = st.columns([4, 1])
             hdr1.markdown(f"""<div style="background-color: #f8fafc; padding: 12px; border-radius: 8px; border-left: 5px solid #0284c7; margin-bottom:12px;"><h3 style="margin:0; color:#0f172a;">{s_data['session_title']}</h3><strong>Format:</strong> {s_data['format_name']} | <strong>Mode:</strong> {s_data['team_format']} | <strong>Rounds Scheduled:</strong> {s_data['total_rounds']} | <strong>Tournament:</strong> {'YES' if s_data.get('is_tournament', 0) else 'NO'}</div>""", unsafe_allow_html=True)
             with hdr2:
-                if st.button("🗑️ Discard", key=f"disc_{s_id}"):
+                if st.button("🗑️️ Discard", key=f"disc_{s_id}"):
                     conn.execute("DELETE FROM session_rosters WHERE session_id = ?", (s_id,))
                     conn.execute("DELETE FROM session_matches WHERE session_id = ?", (s_id,))
                     conn.execute("DELETE FROM sessions WHERE session_id = ?", (s_id,))
                     conn.commit()
                     st.rerun()
 
-            sub_nav = st.radio("Stage", ["📋 Check-In Gate", "🏟️️ Live Court Hub", "📊 Standings & Atomic Commit"], key=f"snav_{s_id}", horizontal=True)
+            sub_nav = st.radio("Stage", ["📋 Check-In Gate", "🏟️ Live Court Hub", "📊 Standings & Atomic Commit"], key=f"snav_{s_id}", horizontal=True)
 
             if sub_nav == "📋 Check-In Gate":
                 st.metric("Ready", f"{len(checked_in_ids)} of {len(enrolled_ids)}")
@@ -4530,9 +4540,9 @@ elif nav == "👥 Player Roster & Calibration":
 
             # Gender-Aware Base Categories
             if p_gender == "FEMALE":
-                in_cats = ["Beginner (0.500)", "Beginner+ (1.000)", "Intermediate (2.000)", "Intermediate+ (3.000)", "Advanced (3.800)", "Pro (4.800)", "Elite (5.800)"]
+                in_cats = ["Beginner (0.500)", "Beginner+ (1.000)", "Intermediate (1.750)", "Intermediate+ (2.750)", "Advanced (3.500)", "Pro (4.500)", "Elite (5.500)"]
             else:
-                in_cats = ["Beginner (0.500)", "Beginner+ (1.000)", "Intermediate (2.500)", "Intermediate+ (3.500)", "Advanced (4.500)", "Pro (5.500)", "Elite (6.300)"]
+                in_cats = ["Beginner (0.500)", "Beginner+ (1.000)", "Intermediate (2.000)", "Intermediate+ (3.500)", "Advanced (4.500)", "Pro (5.500)", "Elite (6.300)"]
 
             in_pick = st.selectbox("Base Calibration Category", in_cats, key="reg_p_cat")
 
@@ -4899,6 +4909,7 @@ elif nav == "🌐 Hawking Engine":
 
     st.markdown("---")
 
+    # Pure Empirical Tabs: Synthetic Ghosts completely removed!
     h_tab1, h_tab2, h_tab3, h_tab4 = st.tabs([
         "🌍 Country & Municipal Hierarchy",
         "⚔️ Cross-Region Parity Analyzer",
@@ -5156,7 +5167,6 @@ elif nav == "🌐 Hawking Engine":
     with h_tab3:
         st.subheader("Social Graph Centrality & Disconnection Telemetry")
 
-        # Multi-Tier Cascading Toolbar
         all_countries_raw = conn.execute("SELECT location_id, location_name, country_code FROM locations WHERE location_type = 'COUNTRY' AND is_active = 1 ORDER BY location_name").fetchall()
         co_opts = ["-- All Countries --"] + [c["location_name"] for c in all_countries_raw]
 
@@ -5276,7 +5286,7 @@ elif nav == "🌐 Hawking Engine":
     conn.close()
 
 # ==============================================================================
-# ⚙️ GLOBAL CONFIG (INTERACTIVE CHAINED DEMOGRAPHIC TIERS & PARAMETERS)
+# ⚙️ GLOBAL CONFIG (CHAINED DISCRETE .999 DEMOGRAPHIC TIERS & UNIVERSAL FORMATS)
 # ==============================================================================
 elif nav == "⚙️ Global Config":
     st.title("Parameter Matrix & Rule Controller")
@@ -5321,35 +5331,35 @@ elif nav == "⚙️ Global Config":
         render_params_by_group(df, ["2. Volatility & Odds", "4. Partner Guardrails", "5. Exchange Caps & Security"])
 
     with tab_fmt:
-        # FUNDAMENTAL CHANGE 1: Interactive Chained Demographic Category Configuration
         st.markdown("### 🏆 Demographic Rating Categories & Boundaries")
-        st.caption("Customize skill thresholds and progression multipliers separately for Men and Women without altering the unified mathematical continuum. Boundaries are mathematically chained: adjusting an outer range updates the next category starting point.")
+        st.caption("Customize skill thresholds and progression multipliers separately for Men and Women without altering the unified mathematical continuum. Boundaries are discrete: Beginner reaches 0.999; achieving 1.000 promotes the player to Beginner+.")
 
+        # STRICT GENDER SELECTION (Prefix matching eliminates 'MALE in FEMALE' bug)
         g_select = st.radio("Select Demographic Group to Configure", ["MALE (Men's Divisions)", "FEMALE (Women's Divisions)"], horizontal=True)
-        active_gender = "MALE" if "MALE" in g_select else "FEMALE"
+        active_gender = "FEMALE" if g_select.startswith("FEMALE") else "MALE"
 
         cats_data = conn.execute("SELECT * FROM rating_categories WHERE gender = ? ORDER BY sort_order ASC", (active_gender,)).fetchall()
 
         # Schema & Data Fallback: Guarantee 7 categories exist for the selected gender
-        if not cats_data:
+        if not cats_data or len(cats_data) < 7:
             if active_gender == "FEMALE":
                 defaults = [
-                    ("CAT_F_BEG", "FEMALE", "Beginner", 0.000, 1.000, 1, 1.00),
-                    ("CAT_F_BEG_PLUS", "FEMALE", "Beginner+", 1.000, 1.750, 2, 1.00),
-                    ("CAT_F_INT", "FEMALE", "Intermediate", 1.750, 2.750, 3, 1.00),
-                    ("CAT_F_INT_PLUS", "FEMALE", "Intermediate+", 2.750, 3.500, 4, 1.00),
-                    ("CAT_F_ADV", "FEMALE", "Advanced", 3.500, 4.500, 5, 1.00),
-                    ("CAT_F_PRO", "FEMALE", "Pro", 4.500, 5.500, 6, 1.00),
+                    ("CAT_F_BEG", "FEMALE", "Beginner", 0.000, 0.999, 1, 1.00),
+                    ("CAT_F_BEG_PLUS", "FEMALE", "Beginner+", 1.000, 1.749, 2, 1.00),
+                    ("CAT_F_INT", "FEMALE", "Intermediate", 1.750, 2.749, 3, 1.00),
+                    ("CAT_F_INT_PLUS", "FEMALE", "Intermediate+", 2.750, 3.499, 4, 1.00),
+                    ("CAT_F_ADV", "FEMALE", "Advanced", 3.500, 4.499, 5, 1.00),
+                    ("CAT_F_PRO", "FEMALE", "Pro", 4.500, 5.499, 6, 1.00),
                     ("CAT_F_ELITE", "FEMALE", "Elite", 5.500, 7.000, 7, 1.00)
                 ]
             else:
                 defaults = [
-                    ("CAT_M_BEG", "MALE", "Beginner", 0.000, 1.000, 1, 1.00),
-                    ("CAT_M_BEG_PLUS", "MALE", "Beginner+", 1.000, 2.000, 2, 1.00),
-                    ("CAT_M_INT", "MALE", "Intermediate", 2.000, 3.500, 3, 1.00),
-                    ("CAT_M_INT_PLUS", "MALE", "Intermediate+", 3.500, 4.500, 4, 1.00),
-                    ("CAT_M_ADV", "MALE", "Advanced", 4.500, 5.500, 5, 1.00),
-                    ("CAT_M_PRO", "MALE", "Pro", 5.500, 6.300, 6, 1.00),
+                    ("CAT_M_BEG", "MALE", "Beginner", 0.000, 0.999, 1, 1.00),
+                    ("CAT_M_BEG_PLUS", "MALE", "Beginner+", 1.000, 1.999, 2, 1.00),
+                    ("CAT_M_INT", "MALE", "Intermediate", 2.000, 3.499, 3, 1.00),
+                    ("CAT_M_INT_PLUS", "MALE", "Intermediate+", 3.500, 4.499, 4, 1.00),
+                    ("CAT_M_ADV", "MALE", "Advanced", 4.500, 5.499, 5, 1.00),
+                    ("CAT_M_PRO", "MALE", "Pro", 5.500, 6.299, 6, 1.00),
                     ("CAT_M_ELITE", "MALE", "Elite", 6.300, 7.000, 7, 1.00)
                 ]
             for cid, gdr, cname, cmin, cmax, s_ord, spd in defaults:
@@ -5359,20 +5369,18 @@ elif nav == "⚙️ Global Config":
             conn.commit()
             cats_data = conn.execute("SELECT * FROM rating_categories WHERE gender = ? ORDER BY sort_order ASC", (active_gender,)).fetchall()
 
-        # Initialize session state for the 6 internal cutoffs (C1 to C6)
-        cutoff_key_prefix = f"cutoffs_{active_gender}"
-        if cutoff_key_prefix not in st.session_state:
-            st.session_state[cutoff_key_prefix] = [float(cats_data[i]["max_rating"]) for i in range(len(cats_data) - 1)]
+        # Session state key strictly isolated per gender
+        cutoff_key = f"cutoffs_{active_gender}"
+        if cutoff_key not in st.session_state or len(st.session_state[cutoff_key]) != 6:
+            st.session_state[cutoff_key] = [float(cats_data[i]["max_rating"]) for i in range(len(cats_data) - 1)]
 
-        # Chained range table rendering
         st.markdown(f"#### ⚙️ Active Tier Matrix: **{active_gender}**")
-        st.info("💡 **Chained Linking Rule:** Starting Rating of Category $N$ is automatically locked to the Outer Range of Category $N-1$.")
+        st.info("💡 **Discrete Chained Linking Rule:** Adjusting the Outer Range (Max) of Category $N$ automatically sets the Starting Rating of Category $N+1$ to $(\text{Max} + 0.001)$ to ensure clean, gap-free promotions.")
 
         edited_names = []
         edited_speeds = []
-        current_cutoffs = list(st.session_state[cutoff_key_prefix])
+        current_cutoffs = list(st.session_state[cutoff_key])
 
-        # Header Columns
         h_c1, h_c2, h_c3, h_c4 = st.columns([2.5, 1.5, 1.8, 1.5])
         h_c1.markdown("**Category Name**")
         h_c2.markdown("**Starting Rating (Min)**")
@@ -5390,10 +5398,9 @@ elif nav == "⚙️ Global Config":
             col2.markdown(f"`{current_min:.3f}`")
 
             if i < len(cats_data) - 1:
-                # Editable Upper Cutoff for Categories 1 to 6
                 new_max = col3.number_input(
                     f"Max #{i+1}",
-                    min_value=current_min + 0.050,
+                    min_value=round(current_min + 0.050, 3),
                     max_value=6.950,
                     value=float(current_cutoffs[i]),
                     step=0.050,
@@ -5402,9 +5409,8 @@ elif nav == "⚙️ Global Config":
                     label_visibility="collapsed"
                 )
                 current_cutoffs[i] = new_max
-                current_min = new_max
+                current_min = round(new_max + 0.001, 3)
             else:
-                # Locked Upper Boundary for Elite (7.000)
                 col3.markdown("`7.000` (Ceiling)")
 
             spd_val = col4.number_input(
@@ -5419,11 +5425,10 @@ elif nav == "⚙️ Global Config":
             )
             edited_speeds.append(spd_val)
 
-        st.session_state[cutoff_key_prefix] = current_cutoffs
+        st.session_state[cutoff_key] = current_cutoffs
 
         st.markdown("<br/>", unsafe_allow_html=True)
         if st.button(f"💾 Save & Apply {active_gender} Categories Everywhere", type="primary", use_container_width=True):
-            # Validate strict monotonic progression
             valid = True
             for k in range(len(current_cutoffs) - 1):
                 if current_cutoffs[k] >= current_cutoffs[k+1]:
@@ -5441,9 +5446,8 @@ elif nav == "⚙️ Global Config":
                             category_name = ?, min_rating = ?, max_rating = ?, speed_multiplier = ? 
                         WHERE category_id = ?
                     """, (edited_names[idx], running_min, running_max, edited_speeds[idx], cat_id))
-                    running_min = running_max
+                    running_min = round(running_max + 0.001, 3)
 
-                # Real-Time System-Wide Badge Synchronization across all players of this gender
                 players_to_sync = conn.execute("SELECT player_id, latent_mmr, gender FROM players WHERE gender = ?", (active_gender,)).fetchall()
                 for pl in players_to_sync:
                     new_badge, _, _, _ = RyftV16.get_cat_for_rating(pl["latent_mmr"], gender=pl["gender"], conn=conn)
@@ -5451,11 +5455,13 @@ elif nav == "⚙️ Global Config":
 
                 conn.commit()
                 st.balloons()
-                st.success(f"✅ {active_gender} Categories Saved & Applied everywhere! ({len(players_to_sync)} player badges refreshed)")
+                st.success(f"✅ {active_gender} Categories Saved & Applied Everywhere! ({len(players_to_sync)} player badges refreshed)")
                 st.rerun()
 
+        # UNIVERSAL PLATFORM FORMATS (Completely independent of gender selection)
         st.markdown("---")
-        st.markdown("### 🎾 Official Match Formats & Confidence Multipliers ($M_C$)")
+        st.markdown("### 🎾 Universal Official Match Formats & Confidence Multipliers ($M_C$)")
+        st.caption("Universal platform confidence weights applied equally to Men's, Women's, and Mixed divisions across all formats.")
         all_formats = conn.execute("SELECT format_id, format_name, category, mc_weight FROM match_formats ORDER BY category, mc_weight DESC, target_games, total_points").fetchall()
         with st.expander("🛠️ Edit Format Weights ($M_C$ Multipliers)", expanded=False):
             with st.form("edit_mc_weights_form"):

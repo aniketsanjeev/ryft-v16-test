@@ -126,11 +126,24 @@ def init_db():
         unique_players_count INTEGER DEFAULT 0, city_bridge_matches_count INTEGER DEFAULT 0, country_bridge_matches_count INTEGER DEFAULT 0, 
         average_player_mmr REAL DEFAULT 3.000, is_active INTEGER DEFAULT 1, created_at TEXT
     )""")
-  c.execute("""CREATE TABLE IF NOT EXISTS rating_categories (
-        category_id TEXT PRIMARY KEY, gender TEXT NOT NULL DEFAULT 'MALE', 
-        category_name TEXT NOT NULL, min_rating REAL NOT NULL, max_rating REAL NOT NULL, 
-        sort_order INTEGER NOT NULL, speed_multiplier REAL DEFAULT 1.00
-    )""")
+
+  # Check if rating_categories needs migration from single category_name PK
+  c.execute("PRAGMA table_info(rating_categories);")
+  r_cols = {row[1]: row for row in c.fetchall()}
+  needs_rebuild = False
+  if r_cols:
+    pk_cols = [row[1] for row in r_cols.values() if row[5] > 0]
+    if pk_cols != ["category_id"]:
+      needs_rebuild = True
+
+  if needs_rebuild or not r_cols:
+    c.execute("DROP TABLE IF EXISTS rating_categories;")
+    c.execute("""CREATE TABLE rating_categories (
+            category_id TEXT PRIMARY KEY, gender TEXT NOT NULL DEFAULT 'MALE', 
+            category_name TEXT NOT NULL, min_rating REAL NOT NULL, max_rating REAL NOT NULL, 
+            sort_order INTEGER NOT NULL, speed_multiplier REAL DEFAULT 1.00
+        )""")
+
   c.execute("""CREATE TABLE IF NOT EXISTS match_formats (
         format_id TEXT PRIMARY KEY, format_name TEXT NOT NULL, category TEXT NOT NULL, mc_weight REAL NOT NULL, 
         target_games INTEGER, total_points INTEGER, is_session_bound INTEGER DEFAULT 0, is_active INTEGER DEFAULT 1
@@ -220,33 +233,33 @@ def init_db():
   add_column_if_not_exists(
       c, "locations", "intransitivity_index", "REAL DEFAULT 0.0"
   )
-  add_column_if_not_exists(
-      c, "rating_categories", "gender", "TEXT DEFAULT 'MALE'"
-  )
-  add_column_if_not_exists(c, "rating_categories", "category_id", "TEXT")
 
-  # UPSERT DEFAULT RATING CATEGORIES FOR MEN AND WOMEN
+  # SEED DEFAULT RATING CATEGORIES FOR BOTH MALE AND FEMALE
   default_cats = [
-      ("CAT_M_BEG", "MALE", "Beginner", 0.000, 0.999, 1, 1.00),
-      ("CAT_M_BEG_PLUS", "MALE", "Beginner+", 1.000, 1.999, 2, 1.00),
-      ("CAT_M_INT", "MALE", "Intermediate", 2.000, 3.499, 3, 1.00),
-      ("CAT_M_INT_PLUS", "MALE", "Intermediate+", 3.500, 4.499, 4, 1.00),
-      ("CAT_M_ADV", "MALE", "Advanced", 4.500, 5.499, 5, 1.00),
-      ("CAT_M_PRO", "MALE", "Pro", 5.500, 6.299, 6, 1.00),
+      ("CAT_M_BEG", "MALE", "Beginner", 0.000, 1.000, 1, 1.00),
+      ("CAT_M_BEG_PLUS", "MALE", "Beginner+", 1.000, 2.000, 2, 1.00),
+      ("CAT_M_INT", "MALE", "Intermediate", 2.000, 3.500, 3, 1.00),
+      ("CAT_M_INT_PLUS", "MALE", "Intermediate+", 3.500, 4.500, 4, 1.00),
+      ("CAT_M_ADV", "MALE", "Advanced", 4.500, 5.500, 5, 1.00),
+      ("CAT_M_PRO", "MALE", "Pro", 5.500, 6.300, 6, 1.00),
       ("CAT_M_ELITE", "MALE", "Elite", 6.300, 7.000, 7, 1.00),
-      ("CAT_F_BEG", "FEMALE", "Beginner", 0.000, 0.999, 1, 1.00),
-      ("CAT_F_BEG_PLUS", "FEMALE", "Beginner+", 1.000, 1.749, 2, 1.00),
-      ("CAT_F_INT", "FEMALE", "Intermediate", 1.750, 2.749, 3, 1.00),
-      ("CAT_F_INT_PLUS", "FEMALE", "Intermediate+", 2.750, 3.499, 4, 1.00),
-      ("CAT_F_ADV", "FEMALE", "Advanced", 3.500, 4.499, 5, 1.00),
-      ("CAT_F_PRO", "FEMALE", "Pro", 4.500, 5.499, 6, 1.00),
+      ("CAT_F_BEG", "FEMALE", "Beginner", 0.000, 1.000, 1, 1.00),
+      ("CAT_F_BEG_PLUS", "FEMALE", "Beginner+", 1.000, 1.750, 2, 1.00),
+      ("CAT_F_INT", "FEMALE", "Intermediate", 1.750, 2.750, 3, 1.00),
+      ("CAT_F_INT_PLUS", "FEMALE", "Intermediate+", 2.750, 3.500, 4, 1.00),
+      ("CAT_F_ADV", "FEMALE", "Advanced", 3.500, 4.500, 5, 1.00),
+      ("CAT_F_PRO", "FEMALE", "Pro", 4.500, 5.500, 6, 1.00),
       ("CAT_F_ELITE", "FEMALE", "Elite", 5.500, 7.000, 7, 1.00),
   ]
   for cid, gdr, cname, cmin, cmax, s_ord, spd in default_cats:
     c.execute(
-        """INSERT OR REPLACE INTO rating_categories 
+        """INSERT INTO rating_categories 
            (category_id, gender, category_name, min_rating, max_rating, sort_order, speed_multiplier)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(category_id) DO UPDATE SET
+               gender=excluded.gender, category_name=excluded.category_name,
+               min_rating=excluded.min_rating, max_rating=excluded.max_rating,
+               sort_order=excluded.sort_order, speed_multiplier=excluded.speed_multiplier""",
         (cid, gdr, cname, cmin, cmax, s_ord, spd),
     )
 
@@ -541,7 +554,8 @@ def seed_factory_parameters(cursor, overwrite_existing=False):
           "Retroactive / Attestation Ingestion Toggle",
           "1.0 enables historical snapshot additive match commits; 0.0 restricts"
           " matches strictly to current sequence.",
-          "Allows backdated attestation without rolling back subsequent matches.",
+          "Allows backdated attestation without rolling back subsequent"
+          " matches.",
           "5. Exchange Caps & Security",
       ),
       (
@@ -1710,7 +1724,7 @@ class RyftV16:
 
     g_filter = "FEMALE" if str(gender).upper() == "FEMALE" else "MALE"
     cats = conn.execute(
-        """SELECT category_name, min_rating, max_rating, speed_multiplier 
+        """SELECT category_name, min_rating, max_rating, speed_multiplier, sort_order 
            FROM rating_categories 
            WHERE gender = ? ORDER BY sort_order ASC""",
         (g_filter,),
@@ -1718,22 +1732,44 @@ class RyftV16:
 
     if not cats:
       cats = conn.execute(
-          """SELECT category_name, min_rating, max_rating, speed_multiplier 
+          """SELECT category_name, min_rating, max_rating, speed_multiplier, sort_order 
              FROM rating_categories ORDER BY sort_order ASC"""
       ).fetchall()
 
     if owns:
       conn.close()
 
+    if not cats:
+      return "Intermediate", 2.000, 3.500, 1.00
+
     for c in cats:
-      if c["min_rating"] <= r_val <= c["max_rating"]:
+      c_min = float(c["min_rating"])
+      c_max = float(c["max_rating"])
+      c_order = int(c["sort_order"])
+      # Last tier includes upper boundary (<= max)
+      if (c_order == len(cats) and c_min <= r_val <= c_max) or (
+          c_min <= r_val < c_max
+      ):
         return (
             c["category_name"],
-            c["min_rating"],
-            c["max_rating"],
-            c["speed_multiplier"] or 1.00,
+            c_min,
+            c_max,
+            float(c["speed_multiplier"] or 1.00),
         )
-    return "Intermediate", 2.000, 3.499, 1.00
+
+    if r_val <= float(cats[0]["min_rating"]):
+      return (
+          cats[0]["category_name"],
+          float(cats[0]["min_rating"]),
+          float(cats[0]["max_rating"]),
+          float(cats[0]["speed_multiplier"] or 1.00),
+      )
+    return (
+        cats[-1]["category_name"],
+        float(cats[-1]["min_rating"]),
+        float(cats[-1]["max_rating"]),
+        float(cats[-1]["speed_multiplier"] or 1.00),
+    )
 
   @staticmethod
   def calc_accuracy(
@@ -2077,7 +2113,7 @@ class RyftV16:
     except Exception:
       match_dt = datetime.now(timezone.utc)
 
-    # Check Retroactive Ingestion Eligibility
+    # Retroactive Lookback Evaluation
     now_utc = datetime.now(timezone.utc)
     is_retroactive_commit = False
     if bool(cfg.get("ENABLE_RETROACTIVE_INGESTION", 1)):
@@ -3389,7 +3425,7 @@ elif nav == "🎾 Log Matches":
       tg = sel_f["target_games"] or 6
       gw = rg1.number_input("Team A Games", 0, 30, tg)
       gl = rg2.number_input("Team B Games", 0, 30, max(0, tg - 2))
-      sa, sb = gw, gl  # Store exact game count in database
+      sa, sb = gw, gl  # Store exact game score in database
       sets_data.append((gw, gl))
 
     elif cat in ("AMERICANO", "MEXICANO"):
@@ -3514,7 +3550,9 @@ elif nav == "🎾 Log Matches":
           for pr in sim_out["res"]:
             all_guardrails.extend(pr.get("flags", []))
 
-          is_retro = 1 if "[ALERT_RETROACTIVE_ATTESTATION]" in all_guardrails else 0
+          is_retro = (
+              1 if "[ALERT_RETROACTIVE_ATTESTATION]" in all_guardrails else 0
+          )
 
           conn.execute(
               """
@@ -3845,7 +3883,7 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
                     conn.commit()
                     st.rerun()
 
-            sub_nav = st.radio("Stage", ["📋 Check-In Gate", "🏟️ Live Court Hub", "📊 Standings & Atomic Commit"], key=f"snav_{s_id}", horizontal=True)
+            sub_nav = st.radio("Stage", ["📋 Check-In Gate", "🏟️️ Live Court Hub", "📊 Standings & Atomic Commit"], key=f"snav_{s_id}", horizontal=True)
 
             if sub_nav == "📋 Check-In Gate":
                 st.metric("Ready", f"{len(checked_in_ids)} of {len(enrolled_ids)}")
@@ -4368,7 +4406,6 @@ elif nav == "📜 Historical Matches":
         st.info("No matches match the selected criteria.")
     else:
         for m in filtered_matches:
-            # Build Full Names for Team A & Team B
             p1_lbl = format_pr_name(m["p1n"], m["p1_prov"]) if m["p1n"] else "Unknown"
             p2_lbl = format_pr_name(m["p2n"], m["p2_prov"]) if m["p2n"] else ""
             p3_lbl = format_pr_name(m["p3n"], m["p3_prov"]) if m["p3n"] else "Unknown"
@@ -4435,7 +4472,6 @@ elif nav == "📜 Historical Matches":
                 p_cols = st.columns(len(p_logs) if p_logs else 1)
                 for idx, pl in enumerate(p_logs):
                     with p_cols[idx]:
-                        is_eff_rusted = pl["pre_rd"] > 100.0 and not pl["is_provisional"]
                         rd_str = f"{pl['pre_rd']:.1f} ➔ {pl['post_rd']:.1f}"
 
                         st.markdown(f"""
@@ -4710,7 +4746,7 @@ elif nav == "🏢 Venues & Regions":
 
                 s1, s2, s3, s4 = st.columns(4)
                 s1.metric("Venues Operating", co["total_venues"])
-                s2.metric("Courts (Physical Total)", co["total_courts"])  # Guaranteed Accurate!
+                s2.metric("Courts (Physical Total)", co["total_courts"])
                 s3.metric("Lifetime Matches", co["total_matches"])
                 s4.metric("Country Bridges", co["country_bridges"])
 
@@ -4863,7 +4899,6 @@ elif nav == "🌐 Hawking Engine":
 
     st.markdown("---")
 
-    # Pure Empirical Tabs: Synthetic Ghosts completely removed!
     h_tab1, h_tab2, h_tab3, h_tab4 = st.tabs([
         "🌍 Country & Municipal Hierarchy",
         "⚔️ Cross-Region Parity Analyzer",
@@ -5241,7 +5276,7 @@ elif nav == "🌐 Hawking Engine":
     conn.close()
 
 # ==============================================================================
-# ⚙️ GLOBAL CONFIG (ALL REAL-TIME TUNING PARAMETERS & GENDER TIERS)
+# ⚙️ GLOBAL CONFIG (INTERACTIVE CHAINED DEMOGRAPHIC TIERS & PARAMETERS)
 # ==============================================================================
 elif nav == "⚙️ Global Config":
     st.title("Parameter Matrix & Rule Controller")
@@ -5286,55 +5321,138 @@ elif nav == "⚙️ Global Config":
         render_params_by_group(df, ["2. Volatility & Odds", "4. Partner Guardrails", "5. Exchange Caps & Security"])
 
     with tab_fmt:
-        # FUNDAMENTAL CHANGE 1: Independent Men's & Women's Category Configuration
+        # FUNDAMENTAL CHANGE 1: Interactive Chained Demographic Category Configuration
         st.markdown("### 🏆 Demographic Rating Categories & Boundaries")
-        st.caption("Customize skill thresholds and progression multipliers separately for Men and Women without altering the unified mathematical continuum.")
+        st.caption("Customize skill thresholds and progression multipliers separately for Men and Women without altering the unified mathematical continuum. Boundaries are mathematically chained: adjusting an outer range updates the next category starting point.")
 
         g_select = st.radio("Select Demographic Group to Configure", ["MALE (Men's Divisions)", "FEMALE (Women's Divisions)"], horizontal=True)
         active_gender = "MALE" if "MALE" in g_select else "FEMALE"
 
         cats_data = conn.execute("SELECT * FROM rating_categories WHERE gender = ? ORDER BY sort_order ASC", (active_gender,)).fetchall()
 
-        with st.form(f"cat_ranges_form_{active_gender}"):
-            updated_ranges = []
-            for cat in cats_data:
-                c1, c2, c3, c4 = st.columns([2, 1.5, 1.5, 1.5])
-                new_name = c1.text_input(f"Category #{cat['sort_order']}", value=cat["category_name"], key=f"name_{active_gender}_{cat['sort_order']}")
-                new_min = c2.number_input(f"Min ({new_name})", 0.000, 7.000, float(cat["min_rating"]), 0.050, format="%.3f", key=f"min_{active_gender}_{cat['sort_order']}")
-                new_max = c3.number_input(f"Max ({new_name})", 0.000, 7.000, float(cat["max_rating"]), 0.050, format="%.3f", key=f"max_{active_gender}_{cat['sort_order']}")
-                new_speed = c4.number_input(f"Speed ({new_name})", 0.10, 3.00, float(cat["speed_multiplier"] or 1.00), 0.05, format="%.2f", key=f"spd_{active_gender}_{cat['sort_order']}")
-                updated_ranges.append({
-                    "id": cat["category_id"],
-                    "name": new_name,
-                    "min": new_min,
-                    "max": new_max,
-                    "speed": new_speed,
-                    "order": cat["sort_order"]
-                })
+        # Schema & Data Fallback: Guarantee 7 categories exist for the selected gender
+        if not cats_data:
+            if active_gender == "FEMALE":
+                defaults = [
+                    ("CAT_F_BEG", "FEMALE", "Beginner", 0.000, 1.000, 1, 1.00),
+                    ("CAT_F_BEG_PLUS", "FEMALE", "Beginner+", 1.000, 1.750, 2, 1.00),
+                    ("CAT_F_INT", "FEMALE", "Intermediate", 1.750, 2.750, 3, 1.00),
+                    ("CAT_F_INT_PLUS", "FEMALE", "Intermediate+", 2.750, 3.500, 4, 1.00),
+                    ("CAT_F_ADV", "FEMALE", "Advanced", 3.500, 4.500, 5, 1.00),
+                    ("CAT_F_PRO", "FEMALE", "Pro", 4.500, 5.500, 6, 1.00),
+                    ("CAT_F_ELITE", "FEMALE", "Elite", 5.500, 7.000, 7, 1.00)
+                ]
+            else:
+                defaults = [
+                    ("CAT_M_BEG", "MALE", "Beginner", 0.000, 1.000, 1, 1.00),
+                    ("CAT_M_BEG_PLUS", "MALE", "Beginner+", 1.000, 2.000, 2, 1.00),
+                    ("CAT_M_INT", "MALE", "Intermediate", 2.000, 3.500, 3, 1.00),
+                    ("CAT_M_INT_PLUS", "MALE", "Intermediate+", 3.500, 4.500, 4, 1.00),
+                    ("CAT_M_ADV", "MALE", "Advanced", 4.500, 5.500, 5, 1.00),
+                    ("CAT_M_PRO", "MALE", "Pro", 5.500, 6.300, 6, 1.00),
+                    ("CAT_M_ELITE", "MALE", "Elite", 6.300, 7.000, 7, 1.00)
+                ]
+            for cid, gdr, cname, cmin, cmax, s_ord, spd in defaults:
+                conn.execute("""INSERT OR REPLACE INTO rating_categories 
+                    (category_id, gender, category_name, min_rating, max_rating, sort_order, speed_multiplier)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)""", (cid, gdr, cname, cmin, cmax, s_ord, spd))
+            conn.commit()
+            cats_data = conn.execute("SELECT * FROM rating_categories WHERE gender = ? ORDER BY sort_order ASC", (active_gender,)).fetchall()
 
-            if st.form_submit_button(f"Verify & Save {active_gender} Categories"):
-                has_error, err_msg = False, ""
-                if updated_ranges[0]["min"] != 0.000:
-                    has_error, err_msg = True, "First category must start at 0.000!"
-                elif updated_ranges[-1]["max"] != 7.000:
-                    has_error, err_msg = True, "Last category must end at 7.000!"
-                else:
-                    for i in range(len(updated_ranges) - 1):
-                        if updated_ranges[i]["min"] >= updated_ranges[i]["max"]:
-                            has_error, err_msg = True, f"Category '{updated_ranges[i]['name']}' has Min >= Max!"
-                            break
+        # Initialize session state for the 6 internal cutoffs (C1 to C6)
+        cutoff_key_prefix = f"cutoffs_{active_gender}"
+        if cutoff_key_prefix not in st.session_state:
+            st.session_state[cutoff_key_prefix] = [float(cats_data[i]["max_rating"]) for i in range(len(cats_data) - 1)]
 
-                if has_error:
-                    st.error(f"❌ {err_msg}")
-                else:
-                    for ur in updated_ranges:
-                        conn.execute("""UPDATE rating_categories SET 
-                            category_name=?, min_rating=?, max_rating=?, speed_multiplier=? 
-                            WHERE category_id=?""",
-                            (ur["name"], ur["min"], ur["max"], ur["speed"], ur["id"]))
-                    conn.commit()
-                    st.success(f"{active_gender} Categories & Boundaries Saved!")
-                    st.rerun()
+        # Chained range table rendering
+        st.markdown(f"#### ⚙️ Active Tier Matrix: **{active_gender}**")
+        st.info("💡 **Chained Linking Rule:** Starting Rating of Category $N$ is automatically locked to the Outer Range of Category $N-1$.")
+
+        edited_names = []
+        edited_speeds = []
+        current_cutoffs = list(st.session_state[cutoff_key_prefix])
+
+        # Header Columns
+        h_c1, h_c2, h_c3, h_c4 = st.columns([2.5, 1.5, 1.8, 1.5])
+        h_c1.markdown("**Category Name**")
+        h_c2.markdown("**Starting Rating (Min)**")
+        h_c3.markdown("**Outer Range (Max)**")
+        h_c4.markdown("**Speed Multiplier**")
+
+        current_min = 0.000
+        for i in range(len(cats_data)):
+            c_row = cats_data[i]
+            col1, col2, col3, col4 = st.columns([2.5, 1.5, 1.8, 1.5])
+
+            name_val = col1.text_input(f"Name #{i+1}", value=c_row["category_name"], key=f"tname_{active_gender}_{i}", label_visibility="collapsed")
+            edited_names.append(name_val)
+
+            col2.markdown(f"`{current_min:.3f}`")
+
+            if i < len(cats_data) - 1:
+                # Editable Upper Cutoff for Categories 1 to 6
+                new_max = col3.number_input(
+                    f"Max #{i+1}",
+                    min_value=current_min + 0.050,
+                    max_value=6.950,
+                    value=float(current_cutoffs[i]),
+                    step=0.050,
+                    format="%.3f",
+                    key=f"tmax_{active_gender}_{i}",
+                    label_visibility="collapsed"
+                )
+                current_cutoffs[i] = new_max
+                current_min = new_max
+            else:
+                # Locked Upper Boundary for Elite (7.000)
+                col3.markdown("`7.000` (Ceiling)")
+
+            spd_val = col4.number_input(
+                f"Spd #{i+1}",
+                min_value=0.10,
+                max_value=3.00,
+                value=float(c_row["speed_multiplier"] or 1.00),
+                step=0.05,
+                format="%.2f",
+                key=f"tspd_{active_gender}_{i}",
+                label_visibility="collapsed"
+            )
+            edited_speeds.append(spd_val)
+
+        st.session_state[cutoff_key_prefix] = current_cutoffs
+
+        st.markdown("<br/>", unsafe_allow_html=True)
+        if st.button(f"💾 Save & Apply {active_gender} Categories Everywhere", type="primary", use_container_width=True):
+            # Validate strict monotonic progression
+            valid = True
+            for k in range(len(current_cutoffs) - 1):
+                if current_cutoffs[k] >= current_cutoffs[k+1]:
+                    st.error(f"❌ Cutoff #{k+1} ({current_cutoffs[k]:.3f}) must be strictly less than Cutoff #{k+2} ({current_cutoffs[k+1]:.3f})!")
+                    valid = False
+                    break
+
+            if valid:
+                running_min = 0.000
+                for idx in range(len(cats_data)):
+                    cat_id = cats_data[idx]["category_id"]
+                    running_max = current_cutoffs[idx] if idx < len(cats_data) - 1 else 7.000
+                    conn.execute("""
+                        UPDATE rating_categories SET 
+                            category_name = ?, min_rating = ?, max_rating = ?, speed_multiplier = ? 
+                        WHERE category_id = ?
+                    """, (edited_names[idx], running_min, running_max, edited_speeds[idx], cat_id))
+                    running_min = running_max
+
+                # Real-Time System-Wide Badge Synchronization across all players of this gender
+                players_to_sync = conn.execute("SELECT player_id, latent_mmr, gender FROM players WHERE gender = ?", (active_gender,)).fetchall()
+                for pl in players_to_sync:
+                    new_badge, _, _, _ = RyftV16.get_cat_for_rating(pl["latent_mmr"], gender=pl["gender"], conn=conn)
+                    conn.execute("UPDATE players SET all_time_badge = ? WHERE player_id = ?", (new_badge, pl["player_id"]))
+
+                conn.commit()
+                st.balloons()
+                st.success(f"✅ {active_gender} Categories Saved & Applied everywhere! ({len(players_to_sync)} player badges refreshed)")
+                st.rerun()
 
         st.markdown("---")
         st.markdown("### 🎾 Official Match Formats & Confidence Multipliers ($M_C$)")

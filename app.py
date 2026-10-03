@@ -1,11 +1,10 @@
-"""
-RYFT ENGINE V.16 / V.17 MASTER IMPLEMENTATION (PART 1 OF 3)
-Modules: Core Dependencies, Database Schemas, Configuration Seeders,
-         Mathematical Helpers, and the RyftV16 Algorithmic Engine.
+"""RYFT ENGINE V.16 / V.17 MASTER IMPLEMENTATION (PART 1 OF 3)
+
+Modules: Core Dependencies, Database Schemas, Automated Migrations,
+         Configuration Seeders, and the RyftV16 Algorithmic Engine.
 """
 
-import datetime
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 import io
 import json
 import math
@@ -118,7 +117,7 @@ def restore_db_from_bytes(uploaded_bytes):
 
 
 def init_db():
-    """Initializes all relational tables, indexes, constraints, and master parameter seeders."""
+    """Initializes all relational tables, migrations, constraints, and parameters."""
     conn = get_db_connection()
     c = conn.cursor()
 
@@ -221,7 +220,7 @@ def init_db():
     );
     """)
 
-    # Table 5: Match Audit Logs (Individual attribution)
+    # Table 5: Match Audit Logs
     c.execute("""
     CREATE TABLE IF NOT EXISTS match_logs (
         log_id TEXT PRIMARY KEY,
@@ -309,7 +308,7 @@ def init_db():
     );
     """)
 
-    # Table 10: Official Match Formats (8 columns)
+    # Table 10: Official Match Formats
     c.execute("""
     CREATE TABLE IF NOT EXISTS match_formats (
         format_id TEXT PRIMARY KEY,
@@ -324,6 +323,12 @@ def init_db():
     """)
 
     # Table 11: Demographic Categories (Discrete Boundaries ending in .999)
+    # Check if existing table lacks 'gender' column from older migrations
+    c.execute("PRAGMA table_info(rating_categories);")
+    cat_cols = [row[1] for row in c.fetchall()]
+    if cat_cols and "gender" not in cat_cols:
+        c.execute("DROP TABLE IF EXISTS rating_categories;")
+
     c.execute("""
     CREATE TABLE IF NOT EXISTS rating_categories (
         category_name TEXT NOT NULL,
@@ -347,7 +352,7 @@ def init_db():
     );
     """)
 
-    # Migration checks for legacy versions
+    # Dynamic column migrations for historical databases
     add_column_if_not_exists(c, "matches", "scoreline_raw", "TEXT")
     add_column_if_not_exists(
         c, "matches", "attestation_status", "TEXT DEFAULT 'COMMITTED'"
@@ -361,6 +366,14 @@ def init_db():
     add_column_if_not_exists(
         c, "players", "accuracy_s_diversity", "REAL DEFAULT 0.0"
     )
+    add_column_if_not_exists(
+        c, "match_formats", "is_singles", "INTEGER DEFAULT 0"
+    )
+    add_column_if_not_exists(
+        c, "match_formats", "is_americano", "INTEGER DEFAULT 0"
+    )
+    add_column_if_not_exists(c, "match_formats", "target_points", "INTEGER")
+    add_column_if_not_exists(c, "match_formats", "target_games", "INTEGER")
 
     # --------------------------------------------------------------------------
     # SEED 1: Discrete Demographic Categories (.999 Transition Rule)
@@ -391,15 +404,15 @@ def init_db():
     for c_name, c_gen, c_min, c_max, s_ord in discrete_tiers:
         c.execute(
             """INSERT OR IGNORE INTO rating_categories 
+                     (category_name, gender, min_rating, max_rating, sort_order)
                      VALUES (?, ?, ?, ?, ?)""",
             (c_name, c_gen, c_min, c_max, s_ord),
         )
 
     # --------------------------------------------------------------------------
-    # SEED 2: Official Formats (Strict 8-Value Schema Alignment)
+    # SEED 2: Official Formats (Strict Schema Alignment)
     # --------------------------------------------------------------------------
     official_formats = [
-        # (format_id, name, cat, mc, target_games, target_points, is_singles, is_americano)
         ("STD_B03", "Standard Best of 3 Sets", "STANDARD", 1.000, 12, None, 0, 0),
         ("STD_B05", "Standard Best of 5 Sets", "STANDARD", 1.000, 20, None, 0, 0),
         ("RACE_11", "Sprint Race to 11 Games", "SPRINT", 0.900, 11, None, 0, 0),
@@ -424,350 +437,68 @@ def init_db():
     for fid, fname, cat, mc, tg, tp, is_s, is_a in official_formats:
         c.execute(
             """INSERT OR IGNORE INTO match_formats 
+                     (format_id, format_name, category, mc, target_games, target_points, is_singles, is_americano)
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (fid, fname, cat, mc, tg, tp, is_s, is_a),
         )
 
     # --------------------------------------------------------------------------
-    # SEED 3: Master Parameter Governance Matrix (Categorized into 7 Groups)
+    # SEED 3: Master Parameter Governance Matrix
     # --------------------------------------------------------------------------
     master_params = [
         # Group 1: Core Physics & Micro Engine
-        (
-            "K_FACTOR",
-            0.150,
-            1,
-            "Base Dynamic K-Factor",
-            "Controls the base sensitivity step for verified rating updates.",
-            "Higher = faster movement; Lower = conservative stabilization.",
-            "1. Core Physics",
-        ),
-        (
-            "SCALE_FACTOR_Q",
-            0.00575,
-            1,
-            "Logistic Scaling Constant (q)",
-            "Converts the [0-7] rating scale to standard Glicko logistic odds.",
-            "ln(10)/400 = 0.00575646. Do not alter unless rescaled.",
-            "1. Core Physics",
-        ),
-        (
-            "DRAW_PARITY_EXCHANGE",
-            0.000,
-            1,
-            "Draw Parity Exchange Ratio",
-            "Defines rating delta exchange when a match ends in an authenticated tie.",
-            "0.0 maintains absolute non-inflationary rating conservation.",
-            "1. Core Physics",
-        ),
-        (
-            "POWER_MEAN_P",
-            2.000,
-            1,
-            "Team Power Mean Exponent (p)",
-            "p=1 is arithmetic mean; p=2 rewards the stronger anchor carry.",
-            "Elevating towards p=3 increases carrying penalties for uneven pairs.",
-            "1. Core Physics",
-        ),
-        (
-            "DISPLAY_RATING_SOFT_FLOOR",
-            0.050,
-            1,
-            "Display Rating Soft Floor Buffer",
-            "Dampens cosmetic display drops from minor single-match variance.",
-            "Protects player engagement on normal daily fluctuations.",
-            "1. Core Physics",
-        ),
+        ("K_FACTOR", 0.150, 1, "Base Dynamic K-Factor", "Controls the base sensitivity step for verified updates.", "Higher = faster movement; Lower = conservative stabilization.", "1. Core Physics"),
+        ("SCALE_FACTOR_Q", 0.00575, 1, "Logistic Scaling Constant (q)", "Converts the [0-7] rating scale to standard Glicko logistic odds.", "ln(10)/400 = 0.00575646. Do not alter unless rescaled.", "1. Core Physics"),
+        ("DRAW_PARITY_EXCHANGE", 0.000, 1, "Draw Parity Exchange Ratio", "Defines delta exchange when a match ends in a tie.", "0.0 maintains absolute non-inflationary rating conservation.", "1. Core Physics"),
+        ("POWER_MEAN_P", 2.000, 1, "Team Power Mean Exponent (p)", "p=1 is arithmetic mean; p=2 rewards the stronger anchor carry.", "Elevating towards p=3 increases carrying penalties for uneven pairs.", "1. Core Physics"),
+        ("DISPLAY_RATING_SOFT_FLOOR", 0.050, 1, "Display Rating Soft Floor Buffer", "Dampens cosmetic display drops from single-match variance.", "Protects player engagement on normal daily fluctuations.", "1. Core Physics"),
+
         # Group 2: Rightsizing & Provisional Placement
-        (
-            "PROVISIONAL_BASE_DELTA",
-            0.500,
-            1,
-            "Provisional Calibration Base Delta",
-            "Base point sensitivity multiplier during early calibration matches.",
-            "Permits rapid trajectory exploration during matches 1 to 5.",
-            "2. Provisional Economy",
-        ),
-        (
-            "ELEVATOR_MARGIN_THRESH",
-            1.100,
-            1,
-            "Provisional Elevator Entropy Trigger",
-            "Blowout margin ratio threshold that activates accelerated placement.",
-            "A 6-0, 6-1 blowout (~1.1385) cleanly triggers the elevator.",
-            "2. Provisional Economy",
-        ),
-        (
-            "RIGHTSIZING_MAX_DELTA",
-            0.750,
-            1,
-            "Rightsizing Performance Maximum Cap",
-            "Maximum single-match delta allowed during smurf placement.",
-            "Bypasses standard 0.300/0.375 caps during blowout rightsizing.",
-            "2. Provisional Economy",
-        ),
-        (
-            "PROVISIONAL_RD_CONTRACTION_DAMPENER",
-            0.350,
-            1,
-            "Provisional RD Contraction Dampener",
-            "Dampens abrupt RD drop after match 1 to prevent premature locking.",
-            "Applies as: rd - ((rd - raw_rd) * 0.35).",
-            "2. Provisional Economy",
-        ),
+        ("PROVISIONAL_BASE_DELTA", 0.500, 1, "Provisional Calibration Base Delta", "Base point sensitivity multiplier during early calibration matches.", "Permits rapid trajectory exploration during matches 1 to 5.", "2. Provisional Economy"),
+        ("ELEVATOR_MARGIN_THRESH", 1.100, 1, "Provisional Elevator Entropy Trigger", "Blowout margin ratio threshold that activates accelerated placement.", "A 6-0, 6-1 blowout (~1.1385) cleanly triggers the elevator.", "2. Provisional Economy"),
+        ("RIGHTSIZING_MAX_DELTA", 0.750, 1, "Rightsizing Performance Maximum Cap", "Maximum single-match delta allowed during smurf placement.", "Bypasses standard 0.300/0.375 caps during blowout rightsizing.", "2. Provisional Economy"),
+        ("PROVISIONAL_RD_CONTRACTION_DAMPENER", 0.350, 1, "Provisional RD Contraction Dampener", "Dampens abrupt RD drop after match 1 to prevent premature locking.", "Applies as: rd - ((rd - raw_rd) * 0.35).", "2. Provisional Economy"),
+
         # Group 3: Tri-Gate & Accuracy Pillars
-        (
-            "MIN_VERIFIED_MATCHES",
-            10.0,
-            1,
-            "Tri-Gate Gate 1: Match Depth",
-            "Minimum completed matches required to graduate out of Provisional.",
-            "Ensures sufficient statistical volume.",
-            "3. Tri-Gate & Accuracy",
-        ),
-        (
-            "MIN_UNIQUE_OPPONENTS",
-            5.0,
-            1,
-            "Tri-Gate Gate 2: Diversity Quota",
-            "Minimum unique opponents played against to prevent pod farming.",
-            "Guarantees graph exploration across the venue community.",
-            "3. Tri-Gate & Accuracy",
-        ),
-        (
-            "RD_VERIFIED_THRESHOLD",
-            100.0,
-            1,
-            "Tri-Gate Gate 3: Confidence Ceiling",
-            "Maximum RD permitted to hold Verified rating status.",
-            "RD > 100 flags the player as Provisional or Rust-Decayed.",
-            "3. Tri-Gate & Accuracy",
-        ),
-        (
-            "ACC_W_RD",
-            0.50,
-            1,
-            "Accuracy Weight: RD Confidence (S_RD)",
-            "Pillar weight for uncertainty contraction.",
-            "Normalized: S_RD + S_N + S_D must equal 1.0.",
-            "3. Tri-Gate & Accuracy",
-        ),
-        (
-            "ACC_W_N",
-            0.30,
-            1,
-            "Accuracy Weight: Sample Depth (S_N)",
-            "Pillar weight for total match experience.",
-            "Normalized across the triad.",
-            "3. Tri-Gate & Accuracy",
-        ),
-        (
-            "ACC_W_D",
-            0.20,
-            1,
-            "Accuracy Weight: Graph Diversity (S_D)",
-            "Pillar weight for unique opponent saturation.",
-            "Normalized across the triad.",
-            "3. Tri-Gate & Accuracy",
-        ),
+        ("MIN_VERIFIED_MATCHES", 10.0, 1, "Tri-Gate Gate 1: Match Depth", "Minimum completed matches required to graduate out of Provisional.", "Ensures sufficient statistical volume.", "3. Tri-Gate & Accuracy"),
+        ("MIN_UNIQUE_OPPONENTS", 5.0, 1, "Tri-Gate Gate 2: Diversity Quota", "Minimum unique opponents played against to prevent pod farming.", "Guarantees graph exploration across the venue community.", "3. Tri-Gate & Accuracy"),
+        ("RD_VERIFIED_THRESHOLD", 100.0, 1, "Tri-Gate Gate 3: Confidence Ceiling", "Maximum RD permitted to hold Verified rating status.", "RD > 100 flags the player as Provisional or Rust-Decayed.", "3. Tri-Gate & Accuracy"),
+        ("ACC_W_RD", 0.50, 1, "Accuracy Weight: RD Confidence (S_RD)", "Pillar weight for uncertainty contraction.", "Normalized: S_RD + S_N + S_D must equal 1.0.", "3. Tri-Gate & Accuracy"),
+        ("ACC_W_N", 0.30, 1, "Accuracy Weight: Sample Depth (S_N)", "Pillar weight for total match experience.", "Normalized across the triad.", "3. Tri-Gate & Accuracy"),
+        ("ACC_W_D", 0.20, 1, "Accuracy Weight: Graph Diversity (S_D)", "Pillar weight for unique opponent saturation.", "Normalized across the triad.", "3. Tri-Gate & Accuracy"),
+
         # Group 4: Anti-Collusion & Network Security
-        (
-            "ENABLE_POD_HASHING",
-            1.0,
-            1,
-            "4-Player Pod Rematch Decay Active",
-            "1=Active. Decays deltas for exact 4-player cluster rematches.",
-            "Neutralizes collusive partner-swapping loops.",
-            "4. Anti-Collusion",
-        ),
-        (
-            "POD_DECAY_HALF_LIFE_HOURS",
-            48.0,
-            1,
-            "Pod Rematch Decay Half-Life (Hours)",
-            "Duration required for rematch point values to restore to full.",
-            "Decays by 50% for every subsequent encounter within window.",
-            "4. Anti-Collusion",
-        ),
-        (
-            "SYBIL_TRUST_MIN_MATCHES",
-            5.0,
-            1,
-            "Sybil Network Gatekeeper Bypass",
-            "Matches required before Sybil centrality penalties apply.",
-            "Prevents brand-new players from being choked by W_G=0.0.",
-            "4. Anti-Collusion",
-        ),
+        ("ENABLE_POD_HASHING", 1.0, 1, "4-Player Pod Rematch Decay Active", "1=Active. Decays deltas for exact 4-player cluster rematches.", "Neutralizes collusive partner-swapping loops.", "4. Anti-Collusion"),
+        ("POD_DECAY_HALF_LIFE_HOURS", 48.0, 1, "Pod Rematch Decay Half-Life (Hours)", "Duration required for rematch point values to restore to full.", "Decays by 50% for every subsequent encounter within window.", "4. Anti-Collusion"),
+        ("SYBIL_TRUST_MIN_MATCHES", 5.0, 1, "Sybil Network Gatekeeper Bypass", "Matches required before Sybil centrality penalties apply.", "Prevents brand-new players from being choked by W_G=0.0.", "4. Anti-Collusion"),
+
         # Group 5: Exchange Security & Attestation Windows
-        (
-            "CASUAL_DAILY_CAP",
-            0.300,
-            1,
-            "Verified 24h Casual Exchange Cap",
-            "Maximum net rating movement allowed within any 24h rolling window.",
-            "Prevents ladder manipulation and rapid volatility shocks.",
-            "5. Exchange Security",
-        ),
-        (
-            "PROVISIONAL_DAILY_CAP",
-            0.375,
-            1,
-            "Provisional 24h Rolling Cap",
-            "Rolling cap for uncalibrated players without rightsizing bypass.",
-            "Guarantees calibrated progression for regular fixtures.",
-            "5. Exchange Security",
-        ),
-        (
-            "MAX_RETROACTIVE_LOOKBACK_HOURS",
-            72.0,
-            1,
-            "Maximum Retroactive Match Ingestion Window",
-            "Hours in the past an out-of-order match is permitted to be logged.",
-            "Locks historical states to maintain immutable seasonal truth.",
-            "5. Exchange Security",
-        ),
-        (
-            "ATTESTATION_AUTO_WINDOW_HOURS",
-            3.0,
-            1,
-            "Attestation Auto-Commit Window",
-            "Hours unverified matches sit in PENDING before auto-committing.",
-            "Allows match disputes before deltas finalize into live MMR.",
-            "5. Exchange Security",
-        ),
-        (
-            "ALLOW_TOURNAMENT_BYPASS",
-            1.0,
-            1,
-            "Tournament Desk Uncapped Bypass",
-            "1=Active. Official tournament events bypass the casual daily cap.",
-            "Enables high-stakes multi-round progression.",
-            "5. Exchange Security",
-        ),
+        ("CASUAL_DAILY_CAP", 0.300, 1, "Verified 24h Casual Exchange Cap", "Maximum net rating movement allowed within any 24h rolling window.", "Prevents ladder manipulation and rapid volatility shocks.", "5. Exchange Security"),
+        ("PROVISIONAL_DAILY_CAP", 0.375, 1, "Provisional 24h Rolling Cap", "Rolling cap for uncalibrated players without rightsizing bypass.", "Guarantees calibrated progression for regular fixtures.", "5. Exchange Security"),
+        ("MAX_RETROACTIVE_LOOKBACK_HOURS", 72.0, 1, "Maximum Retroactive Match Ingestion Window", "Hours in the past an out-of-order match is permitted to be logged.", "Locks historical states to maintain immutable seasonal truth.", "5. Exchange Security"),
+        ("ATTESTATION_AUTO_WINDOW_HOURS", 3.0, 1, "Attestation Auto-Commit Window", "Hours unverified matches sit in PENDING before auto-committing.", "Allows match disputes before deltas finalize into live MMR.", "5. Exchange Security"),
+        ("ALLOW_TOURNAMENT_BYPASS", 1.0, 1, "Tournament Desk Uncapped Bypass", "1=Active. Official tournament events bypass the casual daily cap.", "Enables high-stakes multi-round progression.", "5. Exchange Security"),
+
         # Group 6: Uncertainty, Rust & Dynamic Cohort Escalation (DCE)
-        (
-            "RD_INITIAL",
-            350.0,
-            1,
-            "Initial Rating Deviation (RD_0)",
-            "Starting uncertainty assigned to all newly onboarded players.",
-            "Determines early calibration search radius.",
-            "6. Uncertainty & Rust",
-        ),
-        (
-            "RD_MIN",
-            30.0,
-            1,
-            "Minimum Rating Deviation (RD_floor)",
-            "Theoretical lower bound for uncertainty.",
-            "Prevents rating ossification for long-standing veterans.",
-            "6. Uncertainty & Rust",
-        ),
-        (
-            "C_RUST",
-            1.200,
-            1,
-            "Temporal Inactivity Rust Factor (c)",
-            "Daily uncertainty expansion constant during inactivity.",
-            "RD_eff = sqrt(RD^2 + c^2 * delta_t_days).",
-            "6. Uncertainty & Rust",
-        ),
-        (
-            "ENABLE_DYNAMIC_COHORT_ESCALATION",
-            1.0,
-            1,
-            "Dynamic Cohort Escalation (DCE) Switch",
-            "1=Active. Progressively increases Omega when unrated cohorts play.",
-            "Prevents sandbox lock in newly onboarded clubs.",
-            "6. Uncertainty & Rust",
-        ),
-        (
-            "DCE_TIER_1_MATCHES",
-            3.0,
-            1,
-            "DCE Tier 1 Match Volume Gate",
-            "Cohort experience matches required to step Omega to Tier 1.",
-            "Steps Omega from 0.25 to 0.50.",
-            "6. Uncertainty & Rust",
-        ),
-        (
-            "DCE_TIER_2_MATCHES",
-            7.0,
-            1,
-            "DCE Tier 2 Match Volume Gate",
-            "Cohort experience matches required to step Omega to Tier 2.",
-            "Steps Omega from 0.50 to 0.75.",
-            "6. Uncertainty & Rust",
-        ),
-        (
-            "DCE_TIER_1_OMEGA",
-            0.500,
-            1,
-            "DCE Tier 1 Escalated Omega",
-            "Uncertainty contraction multiplier unlocked at DCE Tier 1.",
-            "Speeds unrated cohort calibration.",
-            "6. Uncertainty & Rust",
-        ),
-        (
-            "DCE_TIER_2_OMEGA",
-            0.750,
-            1,
-            "DCE Tier 2 Escalated Omega",
-            "Uncertainty contraction multiplier unlocked at DCE Tier 2.",
-            "Enables near-full progression without verified anchors.",
-            "6. Uncertainty & Rust",
-        ),
+        ("RD_INITIAL", 350.0, 1, "Initial Rating Deviation (RD_0)", "Starting uncertainty assigned to all newly onboarded players.", "Determines early calibration search radius.", "6. Uncertainty & Rust"),
+        ("RD_MIN", 30.0, 1, "Minimum Rating Deviation (RD_floor)", "Theoretical lower bound for uncertainty.", "Prevents rating ossification for long-standing veterans.", "6. Uncertainty & Rust"),
+        ("C_RUST", 1.200, 1, "Temporal Inactivity Rust Factor (c)", "Daily uncertainty expansion constant during inactivity.", "RD_eff = sqrt(RD^2 + c^2 * delta_t_days).", "6. Uncertainty & Rust"),
+        ("ENABLE_DYNAMIC_COHORT_ESCALATION", 1.0, 1, "Dynamic Cohort Escalation (DCE) Switch", "1=Active. Progressively increases Omega when unrated cohorts play.", "Prevents sandbox lock in newly onboarded clubs.", "6. Uncertainty & Rust"),
+        ("DCE_TIER_1_MATCHES", 3.0, 1, "DCE Tier 1 Match Volume Gate", "Cohort experience matches required to step Omega to Tier 1.", "Steps Omega from 0.25 to 0.50.", "6. Uncertainty & Rust"),
+        ("DCE_TIER_2_MATCHES", 7.0, 1, "DCE Tier 2 Match Volume Gate", "Cohort experience matches required to step Omega to Tier 2.", "Steps Omega from 0.50 to 0.75.", "6. Uncertainty & Rust"),
+        ("DCE_TIER_1_OMEGA", 0.500, 1, "DCE Tier 1 Escalated Omega", "Uncertainty contraction multiplier unlocked at DCE Tier 1.", "Speeds unrated cohort calibration.", "6. Uncertainty & Rust"),
+        ("DCE_TIER_2_OMEGA", 0.750, 1, "DCE Tier 2 Escalated Omega", "Uncertainty contraction multiplier unlocked at DCE Tier 2.", "Enables near-full progression without verified anchors.", "6. Uncertainty & Rust"),
+
         # Group 7: Hawking Macro Engine & Regional Readiness
-        (
-            "HAWKING_MIN_SAMPLE",
-            5.0,
-            1,
-            "Hawking Minimum Regional Sample Size",
-            "Verified player count required before parity analysis executes.",
-            "Protects cold-start regions from inaccurate calibration offsets.",
-            "7. Hawking Macro",
-        ),
-        (
-            "READINESS_VERIFIED_WEIGHT",
-            0.40,
-            1,
-            "Readiness Score: Verified Players Weight",
-            "Weight given to verified player quota in municipal readiness.",
-            "Sums to 1.0 across readiness parameters.",
-            "7. Hawking Macro",
-        ),
-        (
-            "READINESS_DEPTH_WEIGHT",
-            0.35,
-            1,
-            "Readiness Score: Match Depth Weight",
-            "Weight given to matches-per-player ratio.",
-            "Sums to 1.0 across readiness parameters.",
-            "7. Hawking Macro",
-        ),
-        (
-            "READINESS_BRIDGE_WEIGHT",
-            0.25,
-            1,
-            "Readiness Score: Bridge Nodes Weight",
-            "Weight given to active traveler bridges connecting outside clubs.",
-            "Sums to 1.0 across readiness parameters.",
-            "7. Hawking Macro",
-        ),
-        (
-            "BRIDGE_DAMPING_CONSTANT",
-            3.00,
-            1,
-            "Tikhonov Bridge Regularizer Constant (K_0)",
-            "Dampens small-sample traveler variance across regions.",
-            "W_conf = K / (K + K_0).",
-            "7. Hawking Macro",
-        ),
+        ("HAWKING_MIN_SAMPLE", 5.0, 1, "Hawking Minimum Regional Sample Size", "Verified player count required before parity analysis executes.", "Protects cold-start regions from inaccurate calibration offsets.", "7. Hawking Macro"),
+        ("READINESS_VERIFIED_WEIGHT", 0.40, 1, "Readiness Score: Verified Players Weight", "Weight given to verified player quota in municipal readiness.", "Sums to 1.0 across readiness parameters.", "7. Hawking Macro"),
+        ("READINESS_DEPTH_WEIGHT", 0.35, 1, "Readiness Score: Match Depth Weight", "Weight given to matches-per-player ratio.", "Sums to 1.0 across readiness parameters.", "7. Hawking Macro"),
+        ("READINESS_BRIDGE_WEIGHT", 0.25, 1, "Readiness Score: Bridge Nodes Weight", "Weight given to active traveler bridges connecting outside clubs.", "Sums to 1.0 across readiness parameters.", "7. Hawking Macro"),
+        ("BRIDGE_DAMPING_CONSTANT", 3.00, 1, "Tikhonov Bridge Regularizer Constant (K_0)", "Dampens small-sample traveler variance across regions.", "W_conf = K / (K + K_0).", "7. Hawking Macro"),
     ]
 
     for k, v, act, tit, desc, tune, grp in master_params:
-        c.execute(
-            """
+        c.execute("""
         INSERT INTO global_config (param_key, param_value, is_active, param_title, param_desc, tuning_guidance, module_group)
         VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(param_key) DO UPDATE SET
@@ -775,9 +506,7 @@ def init_db():
             param_desc=excluded.param_desc,
             tuning_guidance=excluded.tuning_guidance,
             module_group=excluded.module_group
-        """,
-            (k, v, act, tit, desc, tune, grp),
-        )
+        """, (k, v, act, tit, desc, tune, grp))
 
     conn.commit()
     conn.close()
@@ -842,14 +571,9 @@ class RyftV16:
         2. S_N: Match volume progression
         3. S_D: Opponent graph diversity
         """
-        # Pillar 1: RD Contraction (350 -> 30)
         s_rd = max(0.0, min(1.0, (350.0 - float(rd)) / (350.0 - 30.0)))
-
-        # Pillar 2: Match Sample Depth
         min_m = float(configs.get("MIN_VERIFIED_MATCHES", 10.0))
         s_n = max(0.0, min(1.0, float(verified_matches) / min_m))
-
-        # Pillar 3: Opponent Network Diversity
         min_opp = float(configs.get("MIN_UNIQUE_OPPONENTS", 5.0))
         s_d = max(0.0, min(1.0, float(unique_opps) / min_opp))
 
@@ -901,16 +625,7 @@ class RyftV16:
         historical_timestamp=None,
         conn=None,
     ):
-        """Master execution kernel implementing the full 25-bit algorithmic pipeline:
-
-        - Team Power Means (Bit 1)
-        - Dynamic Cohort Escalation (DCE) for unrated sandboxes
-        - Sybil trust dampener bypass for early-stage players (< 5 matches)
-        - Performance Rating Interpolation for rightsizing smurfs / beginners
-        - Anchor loss cushioning (g(RD_opp))
-        - Strict loss non-positivity verification
-        - Bi-directional 24h rolling cap enforcement with blowout rightsizing bypass
-        """
+        """Master execution kernel implementing the full 25-bit algorithmic pipeline."""
         owns = False
         if not conn:
             conn = get_db_connection()
@@ -918,7 +633,6 @@ class RyftV16:
 
         configs = RyftV16.get_configs(conn)
 
-        # Defensive type conversion: guarantee pure Python dictionaries
         def clean_p(p_in):
             if not p_in:
                 return None
@@ -944,7 +658,6 @@ class RyftV16:
         p3 = clean_p(p3_raw)
         p4 = None if is_singles else clean_p(p4_raw)
 
-        # Apply on-read temporal rust to active participants
         c_rust = configs.get("C_RUST", 1.200)
         p1["rd_eff"] = RyftV16.get_effective_rd(
             p1["rd"], p1.get("last_match_date"), c_rust
@@ -963,9 +676,6 @@ class RyftV16:
 
         bit_trace = {}
 
-        # ----------------------------------------------------------------------
-        # Bit 1: Team Aggregation via Power-Mean (p = 2.0)
-        # ----------------------------------------------------------------------
         p_exp = configs.get("POWER_MEAN_P", 2.000)
         if is_singles:
             ra = p1["latent_mmr"]
@@ -988,24 +698,15 @@ class RyftV16:
             f"Team A Power-Mean MMR: {ra:.3f} (RD: {rd_a:.1f}) | Team B Power-Mean MMR: {rb:.3f} (RD: {rd_b:.1f})"
         )
 
-        # ----------------------------------------------------------------------
-        # Bit 2: Format Multiplier (M_C) Lookup
-        # ----------------------------------------------------------------------
         fmt_row = conn.execute(
             "SELECT mc, is_americano FROM match_formats WHERE format_id = ?",
             (format_id,),
         ).fetchone()
         mc = float(fmt_row["mc"]) if fmt_row else 1.000
-        is_americano = (
-            bool(fmt_row["is_americano"]) if fmt_row else ("AMER" in format_id)
-        )
         bit_trace["Bit 02: Format Confidence (M_C)"] = (
             f"Format {format_id} applied M_C = {mc:.3f}"
         )
 
-        # ----------------------------------------------------------------------
-        # Bit 3: Logistic Expectancy (E_A) & Opponent RD Discount g(RD_opp)
-        # ----------------------------------------------------------------------
         q = configs.get("SCALE_FACTOR_Q", 0.00575)
         g_rd_b = 1.0 / math.sqrt(1.0 + (3.0 * (q**2) * (rd_b**2)) / (math.pi**2))
         g_rd_a = 1.0 / math.sqrt(1.0 + (3.0 * (q**2) * (rd_a**2)) / (math.pi**2))
@@ -1015,15 +716,11 @@ class RyftV16:
             f"E_A: {ea*100:.1f}%, E_B: {eb*100:.1f}%, g(RD_opp): {g_rd_b:.3f}"
         )
 
-        # ----------------------------------------------------------------------
-        # Bit 4: Margin Entropy (S_margin) Evaluation
-        # ----------------------------------------------------------------------
         total_pts = float(score_a + score_b)
         if total_pts <= 0:
             s_margin = 1.0
             actual_a = 0.5
         else:
-            actual_a = float(score_a) / total_pts
             diff = abs(score_a - score_b)
             s_margin = max(
                 0.20,
@@ -1044,14 +741,11 @@ class RyftV16:
             f"Score {score_a}-{score_b} -> Outcome {w_flag}, S_margin: {s_margin:.3f}"
         )
 
-        # ----------------------------------------------------------------------
-        # Dynamic Cohort Escalation (DCE) Pipeline
-        # ----------------------------------------------------------------------
         has_verified_anchor = any(
             p["is_anchor"] == 1 or p["rd_eff"] <= 100.0
             for p in ([p1, p3] if is_singles else [p1, p2, p3, p4])
         )
-        omega_cohort = 0.25  # Base unanchored sandbox dampener
+        omega_cohort = 0.25
 
         if not has_verified_anchor and configs.get(
             "ENABLE_DYNAMIC_COHORT_ESCALATION", 1.0
@@ -1077,26 +771,23 @@ class RyftV16:
             if avg_cohort_m >= dce_t2_m:
                 omega_cohort = dce_om2
                 bit_trace["DCE: Dynamic Cohort Escalation"] = (
-                    f"Tier 2 Escalation active (Avg matches: {avg_cohort_m:.1f} >= {dce_t2_m}): Omega = {omega_cohort:.2f}"
+                    f"Tier 2 Escalation active: Omega = {omega_cohort:.2f}"
                 )
             elif avg_cohort_m >= dce_t1_m:
                 omega_cohort = dce_om1
                 bit_trace["DCE: Dynamic Cohort Escalation"] = (
-                    f"Tier 1 Escalation active (Avg matches: {avg_cohort_m:.1f} >= {dce_t1_m}): Omega = {omega_cohort:.2f}"
+                    f"Tier 1 Escalation active: Omega = {omega_cohort:.2f}"
                 )
             else:
                 bit_trace["DCE: Dynamic Cohort Escalation"] = (
-                    f"Baseline Sandbox (Avg matches: {avg_cohort_m:.1f}): Omega = {omega_cohort:.2f}"
+                    f"Baseline Sandbox: Omega = {omega_cohort:.2f}"
                 )
         elif has_verified_anchor:
             omega_cohort = 1.00
             bit_trace["DCE: Dynamic Cohort Escalation"] = (
-                "Verified Anchor Present: Unconstrained Progression (Omega = 1.00)"
+                "Verified Anchor Present: Full Progression (Omega = 1.00)"
             )
 
-        # ----------------------------------------------------------------------
-        # Bit 5-13: Individual Player Calculation Pipeline
-        # ----------------------------------------------------------------------
         k_base = configs.get("K_FACTOR", 0.150)
         c_dampener = configs.get("PROVISIONAL_RD_CONTRACTION_DAMPENER", 0.350)
         prov_base_k = configs.get("PROVISIONAL_BASE_DELTA", 0.500)
@@ -1114,23 +805,22 @@ class RyftV16:
 
         for side, p in players_list:
             pid = p["player_id"]
-            is_win = (side == w_flag)
-            is_loss = (w_flag != "DRAW" and side != w_flag)
+            is_win = side == w_flag
+            is_loss = w_flag != "DRAW" and side != w_flag
             opp_mmr = rb if side == "A" else ra
             opp_rd = rd_b if side == "A" else rd_a
             s_res = sa_res if side == "A" else (1.0 - sa_res)
             e_side = ea if side == "A" else eb
 
-            # Bit 16 Sybil Trust Bypass: bypass centrality penalty if < 5 matches
-            if p["verified_matches_count"] < configs.get(
-                "SYBIL_TRUST_MIN_MATCHES", 5.0
+            if (
+                p["verified_matches_count"]
+                < configs.get("SYBIL_TRUST_MIN_MATCHES", 5.0)
             ):
                 w_g = 1.00
             else:
                 w_g = max(0.20, min(1.00, float(p.get("sybil_trust_score", 1.0))))
 
-            # Rightsizing & Smurf Placement Logic
-            is_prov = (p["is_provisional"] == 1 or p["rd_eff"] > 100.0)
+            is_prov = p["is_provisional"] == 1 or p["rd_eff"] > 100.0
             is_elevator = (
                 is_prov
                 and is_win
@@ -1138,9 +828,7 @@ class RyftV16:
                 and (opp_mmr >= p["latent_mmr"] - 0.25)
             )
 
-            # Raw unconstrained delta
             if is_elevator:
-                # Performance Rating Interpolation
                 target_performance = opp_mmr + (
                     0.50 * (float(score_a - score_b) / max(1.0, total_pts))
                 )
@@ -1156,7 +844,6 @@ class RyftV16:
                 raw_delta = round(step_k * s_margin * (s_res - e_side), 4)
                 bypass_cap = False
             else:
-                # Bit 11 Anchor Loss Cushioning: g(RD_opp) dampens loss against unrated/high-RD players
                 g_opp_player = 1.0 / math.sqrt(
                     1.0 + (3.0 * (q**2) * (opp_rd**2)) / (math.pi**2)
                 )
@@ -1176,15 +863,12 @@ class RyftV16:
                     )
                 bypass_cap = False
 
-            # Strict Loss Non-Positivity Guardrail
             if is_loss and raw_delta > 0.0:
                 raw_delta = 0.0000
 
-            # Draw Parity Guardrail
             if w_flag == "DRAW":
                 raw_delta = 0.0000
 
-            # Cap Enforcement (24h Casual Window vs. Rightsizing Bypass vs. Tournament Bypass)
             if is_tournament and configs.get("ALLOW_TOURNAMENT_BYPASS", 1.0):
                 applied_delta = raw_delta
             elif bypass_cap:
@@ -1196,7 +880,6 @@ class RyftV16:
             else:
                 applied_delta = max(-casual_cap, min(casual_cap, raw_delta))
 
-            # Apply delta to latent MMR
             new_mmr = round(
                 max(0.000, min(7.000, p["latent_mmr"] + applied_delta)), 3
             )
@@ -1204,7 +887,6 @@ class RyftV16:
                 max(0.00, min(7.00, p["display_rating"] + applied_delta)), 2
             )
 
-            # Bit 11 RD Contraction Easing: smooth step-down rather than collapse
             raw_new_rd = math.sqrt(
                 1.0
                 / (
@@ -1217,7 +899,6 @@ class RyftV16:
             )
             new_rd = round(max(30.0, min(350.0, contracted_rd)), 1)
 
-            # Update Tri-Gate Metrics
             new_matches = p["verified_matches_count"] + 1
             new_opps = p["unique_opponents_count"] + (
                 1 if is_singles else (2 if side == "A" else 2)
@@ -1226,7 +907,6 @@ class RyftV16:
                 new_rd, new_matches, new_opps, configs
             )
 
-            # Check Tri-Gate Calibration Graduation
             grad_m = new_matches >= configs.get("MIN_VERIFIED_MATCHES", 10.0)
             grad_o = new_opps >= configs.get("MIN_UNIQUE_OPPONENTS", 5.0)
             grad_rd = new_rd <= configs.get("RD_VERIFIED_THRESHOLD", 100.0)
@@ -1257,7 +937,6 @@ class RyftV16:
                 "s_d": s_d,
             }
 
-        # Calculate Team Aggregated Deltas
         team_a_delta = (
             calc_results[p1["player_id"]]["delta"]
             if is_singles
@@ -1324,11 +1003,9 @@ class SessionLogicEngine:
         if n < 2:
             return []
         team_list = list(teams)
-        has_bye = False
         if n % 2 != 0:
             team_list.append("__BYE__")
             n += 1
-            has_bye = True
 
         total_rounds = n - 1
         matches_per_round = n // 2
@@ -1341,7 +1018,7 @@ class SessionLogicEngine:
                 t1 = team_list[i]
                 t2 = team_list[n - 1 - i]
                 if t1 == "__BYE__" or t2 == "__BYE__":
-                    continue  # Team sits out on a scheduled bye
+                    continue
                 c_idx = len(round_matches) % courts_count
                 round_matches.append(
                     {
@@ -1353,7 +1030,6 @@ class SessionLogicEngine:
                     }
                 )
             fixtures.extend(round_matches)
-            # Berger Polygon clockwise shift: index 0 remains anchored
             team_list = [team_list[0]] + [team_list[-1]] + team_list[1:-1]
 
         return fixtures
@@ -1377,7 +1053,6 @@ class SessionLogicEngine:
         partner_history = {p: set() for p in players}
 
         for r in range(rounds):
-            # Sort players by play count (ascending) to guarantee equal court access
             sorted_p = sorted(players, key=lambda p: (play_counts[p], random.random()))
             active_quota = min(len(sorted_p) - (len(sorted_p) % 4), courts_count * 4)
             active_pool = sorted_p[:active_quota]
@@ -1386,7 +1061,6 @@ class SessionLogicEngine:
             for bp in benched:
                 sitout_counts[bp] += 1
 
-            # Pair up active pool prioritizing unseen partners
             unpaired = list(active_pool)
             round_courts = active_quota // 4
 
@@ -1394,7 +1068,6 @@ class SessionLogicEngine:
                 if len(unpaired) < 4:
                     break
                 p1 = unpaired.pop(0)
-                # Find partner with least shared games
                 best_partner = min(
                     unpaired,
                     key=lambda cand: (cand in partner_history[p1], random.random()),
@@ -1462,7 +1135,6 @@ class SessionLogicEngine:
             if court_idx >= courts_count:
                 break
             pod = active_rosters[i : i + 4]
-            # Balanced pod pairing: 1st + 4th vs 2nd + 3rd
             p1 = pod[0]["player_id"]
             p2 = pod[3]["player_id"]
             p3 = pod[1]["player_id"]
@@ -1521,7 +1193,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Custom Operational Styling
 st.markdown(
     """
 <style>
@@ -1558,9 +1229,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ------------------------------------------------------------------------------
-# SIDEBAR NAVIGATION
-# ------------------------------------------------------------------------------
 st.sidebar.image(
     "https://raw.githubusercontent.com/streamlit/brand/main/logo/streamlit-logo-primary-colormark-darktext.png",
     width=140,
@@ -1634,7 +1302,6 @@ if nav_selection == "📊 The Dashboard":
         "SELECT COUNT(*) FROM players WHERE calibration_tier='PROVISIONAL'"
     ).fetchone()[0]
 
-    # Live System Median & Drift Calculation
     p_rows = c.execute(
         "SELECT latent_mmr FROM players WHERE calibration_tier != 'INACTIVE'"
     ).fetchall()
@@ -1666,7 +1333,6 @@ if nav_selection == "📊 The Dashboard":
 
     st.divider()
 
-    # Visual Distribution & Activity Highlights
     c_left, c_right = st.columns([3, 2])
 
     with c_left:
@@ -1721,7 +1387,6 @@ elif nav_selection == "🎾 Log Matches":
     players = conn.execute(
         "SELECT player_id, name, latent_mmr, rd, calibration_tier, is_anchor, is_provisional FROM players ORDER BY name"
     ).fetchall()
-    configs = RyftV16.get_configs(conn)
 
     v_map = {v["venue_name"]: v["venue_id"] for v in venues}
     f_map = {
@@ -1736,7 +1401,6 @@ elif nav_selection == "🎾 Log Matches":
     }
     p_meta = {p["player_id"]: dict(p) for p in players}
 
-    # Ingestion Form
     with st.form("log_match_form"):
         st.subheader("1. Match Context")
         c1, c2, c3 = st.columns(3)
@@ -1814,7 +1478,6 @@ elif nav_selection == "🎾 Log Matches":
         submit_btn = st.form_submit_button("⚡ Evaluate & Commit Match")
 
     if submit_btn:
-        # Gateway Validation
         p1_id = p_map.get(ta_p1)
         p2_id = None if is_singles else p_map.get(ta_p2)
         p3_id = p_map.get(tb_p1)
@@ -1829,7 +1492,6 @@ elif nav_selection == "🎾 Log Matches":
             fmt_id = f_map[sel_format_name]
             v_id = v_map[sel_venue_name]
 
-            # Execute Core Physics Engine
             calc_res = RyftV16.compute_match(
                 p_meta[p1_id],
                 p_meta[p2_id] if p2_id else None,
@@ -1846,7 +1508,6 @@ elif nav_selection == "🎾 Log Matches":
                 conn=conn,
             )
 
-            # Atomic Database Commit
             try:
                 c = conn.cursor()
                 m_id = str(uuid.uuid4())
@@ -1881,7 +1542,6 @@ elif nav_selection == "🎾 Log Matches":
                     ),
                 )
 
-                # Persist match logs and update player records
                 for pid, pres in calc_res["players"].items():
                     log_id = str(uuid.uuid4())
                     c.execute(
@@ -1950,7 +1610,6 @@ elif nav_selection == "🎾 Log Matches":
                     f"✅ Match committed successfully! Winner: Team {calc_res['winner']}"
                 )
 
-                # Render Player Delta Summary Cards
                 p_cols = st.columns(len(calc_res["players"]))
                 for idx, (pid, pres) in enumerate(calc_res["players"].items()):
                     with p_cols[idx]:
@@ -1988,9 +1647,6 @@ elif nav_selection == "🧠 Session Logic (V16.2 PROD)":
         horizontal=True,
     )
 
-    # --------------------------------------------------------------------------
-    # SUB-MODE 1: CREATE SESSION
-    # --------------------------------------------------------------------------
     if session_mode == "➕ Create Session":
         venues = conn.execute(
             "SELECT venue_id, venue_name, courts_count FROM venues WHERE is_active=1"
@@ -2022,7 +1678,6 @@ elif nav_selection == "🧠 Session Logic (V16.2 PROD)":
                 "Team Alignment", ["FIXED_DOUBLES", "ROTATING_DOUBLES", "SINGLES"]
             )
 
-            # Compatibility Filter for Match Formats
             if t_format == "ROTATING_DOUBLES":
                 compat_fmts = [
                     f
@@ -2086,7 +1741,6 @@ elif nav_selection == "🧠 Session Logic (V16.2 PROD)":
                     ),
                 )
 
-                # Seed Session Rosters
                 for ep_name in enrolled_players:
                     pid = p_dict[ep_name]
                     p_row = conn.execute(
@@ -2103,10 +1757,8 @@ elif nav_selection == "🧠 Session Logic (V16.2 PROD)":
                         (str(uuid.uuid4()), s_id, pid, snap_mmr),
                     )
 
-                # Generate Schedule Matrix
                 p_ids = [p_dict[name] for name in enrolled_players]
                 if t_format == "FIXED_DOUBLES":
-                    # Form pairings into pairs list
                     pairs = [
                         f"{p_ids[i]}|{p_ids[i+1]}"
                         for i in range(0, len(p_ids) - 1, 2)
@@ -2167,9 +1819,6 @@ elif nav_selection == "🧠 Session Logic (V16.2 PROD)":
                 st.success("Session and fixture schedule initialized successfully!")
                 st.rerun()
 
-    # --------------------------------------------------------------------------
-    # SUB-MODE 2: ACTIVE SESSIONS HUB
-    # --------------------------------------------------------------------------
     else:
         active_sessions = conn.execute("""
             SELECT s.*, v.venue_name, mf.format_name 
@@ -2199,9 +1848,6 @@ elif nav_selection == "🧠 Session Logic (V16.2 PROD)":
                 horizontal=True,
             )
 
-            # ------------------------------------------------------------------
-            # STAGE 1: LIVE COURT HUB & FUNGIBLE SCORING
-            # ------------------------------------------------------------------
             if sub_nav == "🏟️ Live Court Hub":
                 st.subheader(f"Court Traffic Controller — {cur_s['session_title']}")
 
@@ -2270,7 +1916,6 @@ elif nav_selection == "🧠 Session Logic (V16.2 PROD)":
                                 """,
                                     (in_sc_a, in_sc_b, f_id),
                                 )
-                                # Update Roster Running Points
                                 conn.execute(
                                     "UPDATE session_rosters SET running_points = running_points + ? WHERE session_id = ? AND player_id IN (?, ?)",
                                     (
@@ -2293,9 +1938,6 @@ elif nav_selection == "🧠 Session Logic (V16.2 PROD)":
                                 st.success("Match score staged in session memory!")
                                 st.rerun()
 
-            # ------------------------------------------------------------------
-            # STAGE 2: STANDINGS & ATOMIC BATCH COMMIT
-            # ------------------------------------------------------------------
             else:
                 st.subheader(f"Session Standings — {cur_s['session_title']}")
 
@@ -2329,7 +1971,6 @@ elif nav_selection == "🧠 Session Logic (V16.2 PROD)":
 
                 col_close, col_discard = st.columns(2)
 
-                # Two-Stage Atomic Commit Trigger
                 if col_close.button(
                     "🚀 Verify & Submit Entire Session to Engine",
                     use_container_width=True,
@@ -2350,7 +1991,6 @@ elif nav_selection == "🧠 Session Logic (V16.2 PROD)":
                             f"Ingesting {len(completed_fixtures)} session fixtures chronologically..."
                         )
 
-                        # Replay fixtures through RyftV16 sequential pipeline
                         for m in completed_fixtures:
                             p_rows = conn.execute(
                                 """
@@ -2377,11 +2017,10 @@ elif nav_selection == "🧠 Session Logic (V16.2 PROD)":
                                 cur_s["format_id"],
                                 cur_s["venue_id"],
                                 is_singles=(cur_s["team_format"] == "SINGLES"),
-                                is_tournament=True,  # Session caps apply
+                                is_tournament=True,
                                 conn=conn,
                             )
 
-                            # Persist to master tables
                             m_id = str(uuid.uuid4())
                             conn.execute(
                                 """
@@ -2455,7 +2094,6 @@ elif nav_selection == "🧠 Session Logic (V16.2 PROD)":
                                     ),
                                 )
 
-                            # Mark fixture committed
                             conn.execute(
                                 "UPDATE session_matches SET status = 'COMMITTED', match_id = ? WHERE session_match_id = ?",
                                 (m_id, m["session_match_id"]),
@@ -2473,7 +2111,7 @@ elif nav_selection == "🧠 Session Logic (V16.2 PROD)":
                         st.rerun()
 
                 if col_discard.button(
-                    "🗑️️ Discard / Delete Session", use_container_width=True
+                    "🗑 Discard / Delete Session", use_container_width=True
                 ):
                     conn.execute(
                         "DELETE FROM session_rosters WHERE session_id=?",
@@ -2530,7 +2168,7 @@ elif nav_selection == "🏆 Tournament Desk (Delayed Entry)":
 
         c3, c4 = st.columns(2)
         t_date = c3.date_input(
-            "Historical Tournament Date", value=date.today() - datetime.timedelta(days=1)
+            "Historical Tournament Date", value=date.today() - timedelta(days=1)
         )
         t_time = c4.time_input("Scheduled Time", value=time(11, 0))
         t_ts_str = f"{t_date.isoformat()}T{t_time.strftime('%H:%M:%S')}+00:00"
@@ -2583,7 +2221,7 @@ elif nav_selection == "🏆 Tournament Desk (Delayed Entry)":
                 s_b,
                 f_map[sel_f],
                 v_map[sel_v],
-                is_tournament=True,  # Bit 15 Tournament Desk Absolute Bypass
+                is_tournament=True,
                 conn=conn,
             )
 
@@ -2617,7 +2255,6 @@ elif nav_selection == "🏆 Tournament Desk (Delayed Entry)":
                 ),
             )
 
-            # Apply additive deltas directly to live ratings without recursive cascade
             for pid, pres in calc_res["players"].items():
                 conn.execute(
                     """
@@ -2675,7 +2312,6 @@ elif nav_selection == "📜 Historical Matches":
     venues = conn.execute("SELECT venue_id, venue_name FROM venues").fetchall()
     v_dict = {v["venue_id"]: v["venue_name"] for v in venues}
 
-    # Filters
     c1, c2 = st.columns(2)
     sel_venue = c1.selectbox(
         "Filter by Venue", ["All Venues"] + [v["venue_name"] for v in venues]
@@ -2728,13 +2364,11 @@ elif nav_selection == "📜 Historical Matches":
                 m["score_team_a"], m["score_team_b"], m["scoreline_raw"]
             )
 
-            # Header with authentic game scores and player rosters
             header_title = (
                 f"🎾 {t_a_str}  [{score_disp}]  {t_b_str}  •  {v_name}"
             )
 
             with st.expander(header_title):
-                # Fetch match individual logs
                 logs = conn.execute(
                     """
                     SELECT ml.*, p.name 
@@ -2746,23 +2380,18 @@ elif nav_selection == "📜 Historical Matches":
                     (m["match_id"],),
                 ).fetchall()
 
-                # --------------------------------------------------------------
-                # THREE-PANEL DEEP DIVE AUDIT INSPECTION
-                # --------------------------------------------------------------
                 p_tab1, p_tab2, p_tab3 = st.tabs([
                     "⚖️ Pre-Match Balance & Odds",
                     "🛡️ Context & Guardrails",
                     "👥 Player Performance Matrix",
                 ])
 
-                # PANEL 1: PRE-MATCH BALANCE & ODDS
                 with p_tab1:
                     o1, o2, o3 = st.columns(3)
                     o1.metric("Winner", f"Team {m['winner_team']}")
                     o2.metric("Margin Entropy (S_margin)", f"{m['margin_entropy']:.3f}")
                     o3.metric("Format Applied", m["format_name"])
 
-                # PANEL 2: CONTEXT & SYSTEM GUARDRAILS
                 with p_tab2:
                     g1, g2, g3 = st.columns(3)
                     g1.markdown(f"**Match ID:** `{m['match_id'][:13]}...`")
@@ -2778,7 +2407,6 @@ elif nav_selection == "📜 Historical Matches":
                         f"**Country Bridge:** {'YES' if m['is_country_bridge'] else 'NO'}"
                     )
 
-                # PANEL 3: PLAYER PERFORMANCE MATRIX
                 with p_tab3:
                     if logs:
                         l_cols = st.columns(len(logs))
@@ -3002,14 +2630,13 @@ elif nav_selection == "👥 Player Roster & Calibration":
             st.info("No players available for inspection.")
         else:
             sel_p_name = st.selectbox(
-                "Select Player Entity", list(p_name_map.keys())
+                "Select Player Entity", list(p_name_map.keys()), key="inspect_sel_p"
             )
             target_pid = p_name_map[sel_p_name]
             p_data = c.execute(
                 "SELECT * FROM players WHERE player_id=?", (target_pid,)
             ).fetchone()
 
-            # 3-Pillar Decomposed Telemetry Cards
             c_rust = configs.get("C_RUST", 1.200)
             eff_rd = RyftV16.get_effective_rd(
                 p_data["rd"], p_data["last_match_date"], c_rust
@@ -3041,7 +2668,6 @@ elif nav_selection == "👥 Player Roster & Calibration":
 
             st.divider()
 
-            # Calibration Override Form
             with st.form("edit_player_form"):
                 st.markdown("##### 🛠️ Administrative Calibration Overrides")
                 e1, e2, e3 = st.columns(3)
@@ -3052,6 +2678,7 @@ elif nav_selection == "👥 Player Roster & Calibration":
                     value=float(p_data["latent_mmr"]),
                     step=0.001,
                     format="%.3f",
+                    key="ed_mmr",
                 )
                 edit_disp = e2.number_input(
                     "Display Rating [0.00 - 7.00]",
@@ -3060,6 +2687,7 @@ elif nav_selection == "👥 Player Roster & Calibration":
                     value=float(p_data["display_rating"]),
                     step=0.01,
                     format="%.2f",
+                    key="ed_disp",
                 )
                 edit_rd = e3.number_input(
                     "Rating Deviation (RD) [30.0 - 350.0]",
@@ -3068,18 +2696,20 @@ elif nav_selection == "👥 Player Roster & Calibration":
                     value=float(p_data["rd"]),
                     step=1.0,
                     format="%.1f",
+                    key="ed_rd",
                 )
 
                 e4, e5, e6 = st.columns(3)
                 edit_prov = e4.checkbox(
-                    "Is Provisional [PR]", value=bool(p_data["is_provisional"])
+                    "Is Provisional [PR]", value=bool(p_data["is_provisional"]), key="ed_prov"
                 )
                 edit_anchor = e5.checkbox(
-                    "Designate System Anchor", value=bool(p_data["is_anchor"])
+                    "Designate System Anchor", value=bool(p_data["is_anchor"]), key="ed_anchor"
                 )
                 edit_manual = e6.checkbox(
                     "Manual Tri-Gate Verified Override",
                     value=bool(p_data["is_manually_verified"]),
+                    key="ed_manual",
                 )
 
                 e7, e8 = st.columns(2)
@@ -3089,15 +2719,19 @@ elif nav_selection == "👥 Player Roster & Calibration":
                     max_value=1.00,
                     value=float(p_data["sybil_trust_score"]),
                     step=0.05,
+                    key="ed_sybil",
+                )
+                tiers_options = ["PROVISIONAL", "VERIFIED", "ANCHOR", "INACTIVE"]
+                current_t_idx = (
+                    tiers_options.index(p_data["calibration_tier"])
+                    if p_data["calibration_tier"] in tiers_options
+                    else 0
                 )
                 edit_tier = e8.selectbox(
                     "Calibration Status Tier",
-                    ["PROVISIONAL", "VERIFIED", "ANCHOR", "INACTIVE"],
-                    index=["PROVISIONAL", "VERIFIED", "ANCHOR", "INACTIVE"].index(
-                        p_data["calibration_tier"]
-                        if p_data["calibration_tier"] in ["PROVISIONAL", "VERIFIED", "ANCHOR", "INACTIVE"]
-                        else "PROVISIONAL"
-                    ),
+                    tiers_options,
+                    index=current_t_idx,
+                    key="ed_tier",
                 )
 
                 save_p_btn = st.form_submit_button("💾 Commit Profile Changes")
@@ -3157,12 +2791,11 @@ elif nav_selection == "🏢 Venues & Regions":
     )
 
     # --------------------------------------------------------------------------
-    # SUB-VIEW 1: HIERARCHICAL OVERVIEW (ERROR 1 FIXED: DECOUPLED QUERIES)
+    # SUB-VIEW 1: HIERARCHICAL OVERVIEW (ERROR 1 FIXED: DECOUPLED SUBQUERIES)
     # --------------------------------------------------------------------------
     if vr_mode == "🌍 Hierarchical Overview":
         st.subheader("Physical Hierarchy & True Court Infrastructure")
 
-        # Query countries
         countries = c.execute(
             "SELECT * FROM locations WHERE location_type='COUNTRY' ORDER BY location_name"
         ).fetchall()
@@ -3173,7 +2806,6 @@ elif nav_selection == "🏢 Venues & Regions":
             for country in countries:
                 cid = country["location_id"]
                 with st.expander(f"📍 {country['location_name']} (Country Infrastructure)", expanded=True):
-                    # Decoupled Subqueries: True physical count of venues, courts, and players
                     stats = c.execute("""
                         SELECT 
                             (SELECT COUNT(*) FROM venues WHERE country_id = ?) as total_venues,
@@ -3190,7 +2822,6 @@ elif nav_selection == "🏢 Venues & Regions":
                     cs4.metric("Matches Executed", stats["total_matches"])
                     cs5.metric("Country Bridges", stats["country_bridges"])
 
-                    # Fetch municipal territories under this country
                     cities = c.execute(
                         "SELECT * FROM locations WHERE parent_id = ? AND location_type = 'CITY' ORDER BY location_name",
                         (cid,),
@@ -3315,9 +2946,6 @@ elif nav_selection == "🌐 Hawking Engine (V2 Complete)":
     c = conn.cursor()
     configs = RyftV16.get_configs(conn)
 
-    # --------------------------------------------------------------------------
-    # PERSISTENT STATUS BAR ACROSS TOP
-    # --------------------------------------------------------------------------
     active_bridges = c.execute(
         "SELECT COUNT(DISTINCT match_id) FROM matches WHERE is_city_bridge = 1 OR is_country_bridge = 1"
     ).fetchone()[0]
@@ -3360,7 +2988,6 @@ elif nav_selection == "🌐 Hawking Engine (V2 Complete)":
             for ci in cities:
                 ci_id = ci["location_id"]
 
-                # Pull verified player counts and match volume safely
                 v_count = c.execute(
                     "SELECT COUNT(*) FROM players WHERE home_city_id=? AND calibration_tier='VERIFIED'",
                     (ci_id,),
@@ -3387,7 +3014,6 @@ elif nav_selection == "🌐 Hawking Engine (V2 Complete)":
                     (ci_id,),
                 ).fetchone()[0]
 
-                # Cold-Start safe median MMR
                 p_mmrs = [
                     r[0]
                     for r in c.execute(
@@ -3401,7 +3027,6 @@ elif nav_selection == "🌐 Hawking Engine (V2 Complete)":
                 else:
                     med_mmr_disp = "N/A (Cold Start)"
 
-                # Compute Triad Readiness
                 s_v = min(1.0, v_count / 15.0)
                 avg_m = (m_count / total_p) if total_p > 0 else 0.0
                 s_dep = min(1.0, avg_m / 8.0)
@@ -3411,7 +3036,6 @@ elif nav_selection == "🌐 Hawking Engine (V2 Complete)":
                     ((s_v * w_ver) + (s_dep * w_dep) + (s_bri * w_bri)) * 100.0, 1
                 )
 
-                # Persist readiness back to database
                 c.execute(
                     "UPDATE locations SET readiness_score=? WHERE location_id=?",
                     (readiness_score, ci_id),
@@ -3503,7 +3127,6 @@ elif nav_selection == "🌐 Hawking Engine (V2 Complete)":
                     if ci["location_name"] == ci_b_name
                 )
 
-                # Strict Sample Size Gate
                 v_count_a = c.execute(
                     "SELECT COUNT(*) FROM players WHERE home_city_id=? AND rd <= 100.0 AND calibration_tier != 'INACTIVE'",
                     (ci_a_id,),
@@ -3530,7 +3153,6 @@ elif nav_selection == "🌐 Hawking Engine (V2 Complete)":
                         f"✅ Statistical Quota Satisfied: {ci_a_name} ({v_count_a} verified) vs {ci_b_name} ({v_count_b} verified)."
                     )
 
-                    # Inter-region bridge matches
                     bridges = c.execute("""
                         SELECT COUNT(DISTINCT m.match_id) 
                         FROM matches m
@@ -3540,7 +3162,6 @@ elif nav_selection == "🌐 Hawking Engine (V2 Complete)":
                            OR (p1.home_city_id = ? AND p2.home_city_id = ?)
                     """, (ci_a_id, ci_b_id, ci_b_id, ci_a_id)).fetchone()[0]
 
-                    # Tikhonov Damped Weighting
                     k_0 = configs.get("BRIDGE_DAMPING_CONSTANT", 3.00)
                     w_conf = bridges / (bridges + k_0) if bridges > 0 else 0.0
 
@@ -3555,7 +3176,6 @@ elif nav_selection == "🌐 Hawking Engine (V2 Complete)":
     with hawking_tab3:
         st.subheader("Granular Multi-Level Hawking Audit Ledger")
 
-        # Filters
         c_f1, c_f2, c_f3 = st.columns(3)
         cities_all = c.execute(
             "SELECT location_name FROM locations WHERE location_type='CITY' ORDER BY location_name"
@@ -3575,7 +3195,6 @@ elif nav_selection == "🌐 Hawking Engine (V2 Complete)":
             horizontal=True,
         )
 
-        # Pull match telemetry
         q_led = """
             SELECT m.match_id, m.match_timestamp, v.venue_name, loc.location_name as city,
                    m.score_team_a, m.score_team_b, m.delta_team_a, m.delta_team_b,
@@ -3621,7 +3240,6 @@ elif nav_selection == "🌐 Hawking Engine (V2 Complete)":
 
         ghosts = c.execute("SELECT * FROM synthetic_ghosts").fetchall()
         if not ghosts:
-            # Seed synthetic archetypes if empty
             ghost_archetypes = [
                 (str(uuid.uuid4()), "Beginner Baseline Ghost", 0.850, 40.0, 0.06, 1.0),
                 (str(uuid.uuid4()), "Intermediate Benchmark Ghost", 2.750, 35.0, 0.05, 1.0),
@@ -3725,11 +3343,7 @@ elif nav_selection == "⚙️ Global Config":
             ],
             horizontal=True,
         )
-        gen_code = (
-            "FEMALE"
-            if g_select.startswith("FEMALE")
-            else ("M" if g_select.startswith("MALE") else "OPEN")
-        )
+        gen_code = "F" if "FEMALE" in g_select else ("M" if "MALE" in g_select else "OPEN")
 
         st.markdown(f"#### ⚙️ Active Tier Matrix: `{gen_code}`")
         cats = c.execute(
@@ -3751,7 +3365,7 @@ elif nav_selection == "⚙️ Global Config":
                         step=0.001,
                         format="%.3f",
                         key=f"cmin_{gen_code}_{i}",
-                        disabled=(i > 0),  # Chained automatically from previous
+                        disabled=(i > 0),
                     )
                     max_v = c3.number_input(
                         "Max Rating (Ends in .999)",
@@ -3769,7 +3383,6 @@ elif nav_selection == "⚙️ Global Config":
                 )
 
             if save_cats_btn:
-                # Apply chained auto-adjustment: next_min = current_max + 0.001
                 chained = []
                 curr_floor = edited_ranges[0][1]
                 for idx, (cname, _, cmax, s_ord) in enumerate(edited_ranges):
@@ -3864,7 +3477,6 @@ elif nav_selection == "⚙️ Global Config":
                     )
                     styles = getSampleStyleSheet()
 
-                    # Custom typography styles
                     title_style = ParagraphStyle(
                         "DocTitle",
                         parent=styles["Heading1"],
@@ -3889,7 +3501,6 @@ elif nav_selection == "⚙️ Global Config":
 
                     story = []
 
-                    # Document Header
                     story.append(Paragraph("RYFT RATING ENGINE V.16 / V.17", title_style))
                     story.append(Paragraph("Master Engineering Bible & Algorithmic Blueprint", h2_style))
                     story.append(Paragraph(f"Compiled on: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}", body_style))
@@ -3897,7 +3508,6 @@ elif nav_selection == "⚙️ Global Config":
                     story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#cbd5e1")))
                     story.append(Spacer(1, 12))
 
-                    # Section 1: Executive Overview
                     story.append(Paragraph("1. Executive Overview & Core Physics", h2_style))
                     story.append(Paragraph(
                         "The RYFT Engine implements a deterministic, non-inflationary rating protocol combining Glicko-2 Bayesian uncertainty contraction with Cubic Power-Mean team aggregations, margin entropy scaling, dynamic cohort escalation (DCE), and bi-directional exchange caps. Out-of-order matches are stamped with historical snapshots and committed additively without cascading rollbacks.",
@@ -3905,7 +3515,6 @@ elif nav_selection == "⚙️ Global Config":
                     ))
                     story.append(Spacer(1, 10))
 
-                    # Section 2: Active Global Governance Matrix Table
                     story.append(Paragraph("2. Active Governance Parameters", h2_style))
                     p_all = c.execute("SELECT param_key, param_value, module_group FROM global_config ORDER BY module_group, param_key").fetchall()
 
@@ -3925,7 +3534,6 @@ elif nav_selection == "⚙️ Global Config":
                     story.append(t)
                     story.append(Spacer(1, 14))
 
-                    # Section 3: Discrete Demographic Tiers
                     story.append(Paragraph("3. Discrete Demographic Categories (.999 Transitions)", h2_style))
                     d_cats = c.execute("SELECT category_name, gender, min_rating, max_rating FROM rating_categories ORDER BY gender, sort_order").fetchall()
                     cat_data = [["Category", "Division", "Min Rating", "Max Rating"]]
@@ -3941,7 +3549,6 @@ elif nav_selection == "⚙️ Global Config":
                     ]))
                     story.append(t_cat)
 
-                    # Build PDF Document
                     doc.build(story)
                     pdf_bytes = pdf_buffer.getvalue()
 

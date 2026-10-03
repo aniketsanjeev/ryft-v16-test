@@ -2258,7 +2258,7 @@ elif nav_selection == "🧠 Session Logic (V16.2 PROD)":
                                 min_value=0,
                                 max_value=50,
                                 value=fix["score_b"],
-                                key=sb_key := f"sb_{f_id}",
+                                key=f"sb_{f_id}",
                             )
 
                             if sc3.button("Save Result", key=f"btn_save_{f_id}"):

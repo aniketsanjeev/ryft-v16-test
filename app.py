@@ -11,107 +11,107 @@ import pandas as pd
 import streamlit as st
 
 try:
-  from reportlab.lib import colors
-  from reportlab.lib.pagesizes import letter
-  from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-  from reportlab.platypus import (
-      HRFlowable,
-      Paragraph,
-      SimpleDocTemplate,
-      Spacer,
-      Table,
-      TableStyle,
-  )
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.platypus import (
+        HRFlowable,
+        Paragraph,
+        SimpleDocTemplate,
+        Spacer,
+        Table,
+        TableStyle,
+    )
 
-  REPORTLAB_AVAILABLE = True
+    REPORTLAB_AVAILABLE = True
 except ImportError:
-  REPORTLAB_AVAILABLE = False
+    REPORTLAB_AVAILABLE = False
 
 DB_FILE = "ryft_v16_master.db"
 IST_ZONE = timezone(timedelta(hours=5, minutes=30))
 
 
 def get_current_ist_datetime():
-  return datetime.now(IST_ZONE)
+    return datetime.now(IST_ZONE)
 
 
 def format_ist_banner():
-  now_ist = get_current_ist_datetime()
-  return now_ist.strftime("🇮🇳 %A, %d %B %Y | %I:%M:%S %p IST")
+    now_ist = get_current_ist_datetime()
+    return now_ist.strftime("🇮🇳 %A, %d %B %Y | %I:%M:%S %p IST")
 
 
 # ==============================================================================
 # 1. DATABASE SCHEMA & BACKUP MANAGEMENT
 # ==============================================================================
 def get_db_connection():
-  conn = sqlite3.connect(DB_FILE, timeout=60.0, check_same_thread=False)
-  conn.row_factory = sqlite3.Row
-  conn.execute("PRAGMA journal_mode = WAL;")
-  conn.execute("PRAGMA busy_timeout = 60000;")
-  return conn
+    conn = sqlite3.connect(DB_FILE, timeout=60.0, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode = WAL;")
+    conn.execute("PRAGMA busy_timeout = 60000;")
+    return conn
 
 
 def add_column_if_not_exists(cursor, table, col_name, col_type):
-  cursor.execute(f"PRAGMA table_info({table});")
-  if col_name not in [row[1] for row in cursor.fetchall()]:
-    cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type};")
+    cursor.execute(f"PRAGMA table_info({table});")
+    if col_name not in [row[1] for row in cursor.fetchall()]:
+        cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type};")
 
 
 def format_pr_name(name, is_prov):
-  return f"{name} (PR)" if is_prov else name
+    return f"{name} (PR)" if is_prov else name
 
 
 def export_db_bytes():
-  conn = get_db_connection()
-  conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-  conn.commit()
-  mem_backup = sqlite3.connect(":memory:")
-  conn.backup(mem_backup)
-  conn.close()
-  temp_file = "temp_export_snapshot.db"
-  dest = sqlite3.connect(temp_file)
-  mem_backup.backup(dest)
-  dest.close()
-  mem_backup.close()
-  with open(temp_file, "rb") as f:
-    data = f.read()
-  if os.path.exists(temp_file):
-    os.remove(temp_file)
-  return data
+    conn = get_db_connection()
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+    conn.commit()
+    mem_backup = sqlite3.connect(":memory:")
+    conn.backup(mem_backup)
+    conn.close()
+    temp_file = "temp_export_snapshot.db"
+    dest = sqlite3.connect(temp_file)
+    mem_backup.backup(dest)
+    dest.close()
+    mem_backup.close()
+    with open(temp_file, "rb") as f:
+        data = f.read()
+    if os.path.exists(temp_file):
+        os.remove(temp_file)
+    return data
 
 
 def restore_db_from_bytes(uploaded_bytes):
-  temp_in = "temp_incoming_restore.db"
-  with open(temp_in, "wb") as f:
-    f.write(uploaded_bytes)
-  source = sqlite3.connect(temp_in)
-  tables = [
-      r[0]
-      for r in source.execute(
-          "SELECT name FROM sqlite_master WHERE type='table'"
-      ).fetchall()
-  ]
-  if "players" not in tables or "global_config" not in tables:
+    temp_in = "temp_incoming_restore.db"
+    with open(temp_in, "wb") as f:
+        f.write(uploaded_bytes)
+    source = sqlite3.connect(temp_in)
+    tables = [
+        r[0]
+        for r in source.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    ]
+    if "players" not in tables or "global_config" not in tables:
+        source.close()
+        os.remove(temp_in)
+        raise ValueError("Invalid RYFT database snapshot.")
+    source.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+    dest = get_db_connection()
+    dest.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+    source.backup(dest)
     source.close()
-    os.remove(temp_in)
-    raise ValueError("Invalid RYFT database snapshot.")
-  source.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-  dest = get_db_connection()
-  dest.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-  source.backup(dest)
-  source.close()
-  dest.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-  dest.commit()
-  dest.close()
-  if os.path.exists(temp_in):
-    os.remove(temp_in)
+    dest.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+    dest.commit()
+    dest.close()
+    if os.path.exists(temp_in):
+        os.remove(temp_in)
 
 
 def init_db():
-  conn = get_db_connection()
-  c = conn.cursor()
-  c.execute("PRAGMA foreign_keys = ON;")
-  c.execute("""CREATE TABLE IF NOT EXISTS locations (
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("PRAGMA foreign_keys = ON;")
+    c.execute("""CREATE TABLE IF NOT EXISTS locations (
         location_id TEXT PRIMARY KEY, location_type TEXT NOT NULL, location_name TEXT NOT NULL, 
         parent_id TEXT, country_code TEXT DEFAULT 'IND', intransitivity_idx REAL DEFAULT 0.0, 
         intransitivity_index REAL DEFAULT 0.0, hawking_offset REAL DEFAULT 0.0, suggested_offset REAL DEFAULT 0.0, 
@@ -120,40 +120,40 @@ def init_db():
         highest_player_mmr REAL DEFAULT 3.000, lowest_player_mmr REAL DEFAULT 3.000, is_normalized INTEGER DEFAULT 0, 
         updated_at TEXT, is_active INTEGER DEFAULT 1
     )""")
-  c.execute("""CREATE TABLE IF NOT EXISTS venues (
+    c.execute("""CREATE TABLE IF NOT EXISTS venues (
         venue_id TEXT PRIMARY KEY, venue_name TEXT NOT NULL, raw_input_name TEXT, is_verified INTEGER DEFAULT 0, 
         city_id TEXT NOT NULL, country_code TEXT NOT NULL, court_count INTEGER DEFAULT 1, total_matches_played INTEGER DEFAULT 0, 
         unique_players_count INTEGER DEFAULT 0, city_bridge_matches_count INTEGER DEFAULT 0, country_bridge_matches_count INTEGER DEFAULT 0, 
         average_player_mmr REAL DEFAULT 3.000, is_active INTEGER DEFAULT 1, created_at TEXT
     )""")
 
-  # Ensure rating_categories supports dual demographic primary key (category_id)
-  c.execute("PRAGMA table_info(rating_categories);")
-  r_cols = {row[1]: row for row in c.fetchall()}
-  needs_rebuild = False
-  if r_cols:
-    pk_cols = [row[1] for row in r_cols.values() if row[5] > 0]
-    if pk_cols != ["category_id"]:
-      needs_rebuild = True
+    # Ensure rating_categories supports dual demographic primary key (category_id)
+    c.execute("PRAGMA table_info(rating_categories);")
+    r_cols = {row[1]: row for row in c.fetchall()}
+    needs_rebuild = False
+    if r_cols:
+        pk_cols = [row[1] for row in r_cols.values() if row[5] > 0]
+        if pk_cols != ["category_id"]:
+            needs_rebuild = True
 
-  if not needs_rebuild and r_cols:
-    cat_count = c.execute("SELECT COUNT(*) FROM rating_categories").fetchone()[0]
-    if cat_count < 14:
-      needs_rebuild = True
+    if not needs_rebuild and r_cols:
+        cat_count = c.execute("SELECT COUNT(*) FROM rating_categories").fetchone()[0]
+        if cat_count < 14:
+            needs_rebuild = True
 
-  if needs_rebuild or not r_cols:
-    c.execute("DROP TABLE IF EXISTS rating_categories;")
-    c.execute("""CREATE TABLE rating_categories (
+    if needs_rebuild or not r_cols:
+        c.execute("DROP TABLE IF EXISTS rating_categories;")
+        c.execute("""CREATE TABLE rating_categories (
             category_id TEXT PRIMARY KEY, gender TEXT NOT NULL DEFAULT 'MALE', 
             category_name TEXT NOT NULL, min_rating REAL NOT NULL, max_rating REAL NOT NULL, 
             sort_order INTEGER NOT NULL, speed_multiplier REAL DEFAULT 1.00
         )""")
 
-  c.execute("""CREATE TABLE IF NOT EXISTS match_formats (
+    c.execute("""CREATE TABLE IF NOT EXISTS match_formats (
         format_id TEXT PRIMARY KEY, format_name TEXT NOT NULL, category TEXT NOT NULL, mc_weight REAL NOT NULL, 
         target_games INTEGER, total_points INTEGER, is_session_bound INTEGER DEFAULT 0, is_active INTEGER DEFAULT 1
     )""")
-  c.execute("""CREATE TABLE IF NOT EXISTS players (
+    c.execute("""CREATE TABLE IF NOT EXISTS players (
         player_id TEXT PRIMARY KEY, display_name TEXT NOT NULL, gender TEXT NOT NULL DEFAULT 'MALE',
         birth_date TEXT DEFAULT '1995-01-01', initial_rating REAL NOT NULL, home_venue_id TEXT, 
         home_city_id TEXT NOT NULL, home_country_code TEXT NOT NULL DEFAULT 'IND', latent_mmr REAL NOT NULL, 
@@ -169,7 +169,7 @@ def init_db():
         graph_centrality REAL DEFAULT 0.20, is_quarantined INTEGER DEFAULT 0, is_anchor INTEGER DEFAULT 0, 
         is_ceiling_anchor INTEGER DEFAULT 0, is_dummy INTEGER DEFAULT 0, last_match_time TEXT, created_at TEXT
     )""")
-  c.execute("""CREATE TABLE IF NOT EXISTS sessions (
+    c.execute("""CREATE TABLE IF NOT EXISTS sessions (
         session_id TEXT PRIMARY KEY, venue_id TEXT NOT NULL, session_title TEXT NOT NULL, session_date TEXT NOT NULL DEFAULT '', 
         start_time TEXT NOT NULL DEFAULT '09:00', end_time TEXT NOT NULL DEFAULT '11:00', match_mode TEXT NOT NULL DEFAULT 'DOUBLES', 
         team_format TEXT NOT NULL, format_id TEXT NOT NULL, tourney_structure TEXT NOT NULL DEFAULT 'ROUND_ROBIN', 
@@ -178,7 +178,7 @@ def init_db():
         total_rounds INTEGER NOT NULL DEFAULT 1, current_round INTEGER DEFAULT 0, session_status TEXT DEFAULT 'CONFIG', 
         created_at TEXT NOT NULL, completed_at TEXT, current_stage TEXT, lineup_mode TEXT
     )""")
-  c.execute("""CREATE TABLE IF NOT EXISTS session_matches (
+    c.execute("""CREATE TABLE IF NOT EXISTS session_matches (
         session_match_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, round_number INTEGER NOT NULL, court_id TEXT NOT NULL, 
         match_order INTEGER NOT NULL, team_a_p1_id TEXT NOT NULL, team_a_p2_id TEXT, team_b_p1_id TEXT NOT NULL, 
         team_b_p2_id TEXT, team_a_name TEXT DEFAULT '', team_b_name TEXT DEFAULT '', score_team_a INTEGER DEFAULT 0, 
@@ -186,7 +186,7 @@ def init_db():
         set_scores_json TEXT DEFAULT '[]', match_status TEXT DEFAULT 'SCHEDULED', started_at TEXT, completed_at TEXT, 
         committed_match_id TEXT, stage TEXT, group_id TEXT, flight_number INTEGER DEFAULT 1
     )""")
-  c.execute("""CREATE TABLE IF NOT EXISTS matches (
+    c.execute("""CREATE TABLE IF NOT EXISTS matches (
         match_id TEXT PRIMARY KEY, venue_id TEXT NOT NULL, format_id TEXT NOT NULL, session_id TEXT, is_singles INTEGER DEFAULT 0, 
         is_tournament INTEGER DEFAULT 0, is_venue_bridge INTEGER DEFAULT 0, is_city_bridge INTEGER DEFAULT 0, 
         is_country_bridge INTEGER DEFAULT 0, team_a_p1_id TEXT NOT NULL, team_a_p2_id TEXT, team_b_p1_id TEXT NOT NULL, 
@@ -196,28 +196,28 @@ def init_db():
         delta_r_p1 REAL DEFAULT 0.0, delta_r_p2 REAL DEFAULT 0.0, delta_r_p3 REAL DEFAULT 0.0, delta_r_p4 REAL DEFAULT 0.0, 
         guardrails_summary TEXT DEFAULT '[]', is_retroactive INTEGER DEFAULT 0, match_timestamp TEXT NOT NULL, processed_at TEXT
     )""")
-  c.execute("""CREATE TABLE IF NOT EXISTS match_logs (
+    c.execute("""CREATE TABLE IF NOT EXISTS match_logs (
         log_id TEXT PRIMARY KEY, match_id TEXT NOT NULL, player_id TEXT NOT NULL, pre_latent_mmr REAL NOT NULL, 
         post_latent_mmr REAL NOT NULL, pre_display_rating REAL NOT NULL, post_display_rating REAL NOT NULL, 
         pre_rd REAL NOT NULL, post_rd REAL NOT NULL, pre_accuracy_pct REAL NOT NULL, post_accuracy_pct REAL NOT NULL, 
         delta_r REAL NOT NULL, is_elevator_active INTEGER DEFAULT 0, guardrails_triggered TEXT DEFAULT '[]', 
         is_retroactive INTEGER DEFAULT 0, logged_at TEXT NOT NULL
     )""")
-  c.execute("""CREATE TABLE IF NOT EXISTS global_config (
+    c.execute("""CREATE TABLE IF NOT EXISTS global_config (
         param_key TEXT PRIMARY KEY, param_value REAL NOT NULL, is_active INTEGER DEFAULT 1, 
         title TEXT, description TEXT, tuning_guide TEXT, module_group TEXT
     )""")
-  c.execute("""CREATE TABLE IF NOT EXISTS tournaments (
+    c.execute("""CREATE TABLE IF NOT EXISTS tournaments (
         tourney_id TEXT PRIMARY KEY, name TEXT NOT NULL, venue_id TEXT NOT NULL, tourney_date TEXT NOT NULL, 
         floor_category TEXT NOT NULL, status TEXT DEFAULT 'PENDING', created_at TEXT NOT NULL
     )""")
-  c.execute("""CREATE TABLE IF NOT EXISTS tourney_matches (
+    c.execute("""CREATE TABLE IF NOT EXISTS tourney_matches (
         t_match_id TEXT PRIMARY KEY, tourney_id TEXT NOT NULL, match_time TEXT NOT NULL, format_id TEXT NOT NULL, 
         is_singles INTEGER DEFAULT 0, team_a_p1_id TEXT NOT NULL, team_a_p2_id TEXT, team_b_p1_id TEXT NOT NULL, 
         team_b_p2_id TEXT, score_team_a INTEGER DEFAULT 0, score_team_b INTEGER DEFAULT 0, games_winner INTEGER DEFAULT 0, 
         games_loser INTEGER DEFAULT 0, set_scores_json TEXT DEFAULT '[]', status TEXT DEFAULT 'STAGED'
     )""")
-  c.execute("""CREATE TABLE IF NOT EXISTS session_rosters (
+    c.execute("""CREATE TABLE IF NOT EXISTS session_rosters (
         roster_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, entity_type TEXT, player_id_p1 TEXT, player_id_p2 TEXT, 
         display_label TEXT, group_id TEXT DEFAULT 'A', seed_index INTEGER DEFAULT 0, initial_mmr REAL DEFAULT 3.0, 
         initial_rd REAL DEFAULT 350.0, is_checked_in INTEGER DEFAULT 0, is_defected INTEGER DEFAULT 0, matches_played INTEGER DEFAULT 0, 
@@ -227,1105 +227,205 @@ def init_db():
         knockout_seed INTEGER
     )""")
 
-  add_column_if_not_exists(c, "players", "gender", "TEXT DEFAULT 'MALE'")
-  add_column_if_not_exists(
-      c, "players", "birth_date", "TEXT DEFAULT '1995-01-01'"
-  )
-  add_column_if_not_exists(c, "players", "consecutive_losses", "INTEGER DEFAULT 0")
-  add_column_if_not_exists(
-      c, "players", "tournament_floor_rating", "REAL DEFAULT 0.0"
-  )
-  add_column_if_not_exists(
-      c, "locations", "intransitivity_index", "REAL DEFAULT 0.0"
-  )
+    add_column_if_not_exists(c, "players", "gender", "TEXT DEFAULT 'MALE'")
+    add_column_if_not_exists(c, "players", "birth_date", "TEXT DEFAULT '1995-01-01'")
+    add_column_if_not_exists(c, "players", "consecutive_losses", "INTEGER DEFAULT 0")
+    add_column_if_not_exists(c, "players", "tournament_floor_rating", "REAL DEFAULT 0.0")
+    add_column_if_not_exists(c, "locations", "intransitivity_index", "REAL DEFAULT 0.0")
 
-  # SEED DEFAULT CATEGORIES: Discrete .999 thresholds for clean promotions
-  default_cats = [
-      ("CAT_M_BEG", "MALE", "Beginner", 0.000, 0.999, 1, 1.00),
-      ("CAT_M_BEG_PLUS", "MALE", "Beginner+", 1.000, 1.999, 2, 1.00),
-      ("CAT_M_INT", "MALE", "Intermediate", 2.000, 3.499, 3, 1.00),
-      ("CAT_M_INT_PLUS", "MALE", "Intermediate+", 3.500, 4.499, 4, 1.00),
-      ("CAT_M_ADV", "MALE", "Advanced", 4.500, 5.499, 5, 1.00),
-      ("CAT_M_PRO", "MALE", "Pro", 5.500, 6.299, 6, 1.00),
-      ("CAT_M_ELITE", "MALE", "Elite", 6.300, 7.000, 7, 1.00),
-      ("CAT_F_BEG", "FEMALE", "Beginner", 0.000, 0.999, 1, 1.00),
-      ("CAT_F_BEG_PLUS", "FEMALE", "Beginner+", 1.000, 1.749, 2, 1.00),
-      ("CAT_F_INT", "FEMALE", "Intermediate", 1.750, 2.749, 3, 1.00),
-      ("CAT_F_INT_PLUS", "FEMALE", "Intermediate+", 2.750, 3.499, 4, 1.00),
-      ("CAT_F_ADV", "FEMALE", "Advanced", 3.500, 4.499, 5, 1.00),
-      ("CAT_F_PRO", "FEMALE", "Pro", 4.500, 5.499, 6, 1.00),
-      ("CAT_F_ELITE", "FEMALE", "Elite", 5.500, 7.000, 7, 1.00),
-  ]
-  for cid, gdr, cname, cmin, cmax, s_ord, spd in default_cats:
-    c.execute(
-        """INSERT INTO rating_categories 
-           (category_id, gender, category_name, min_rating, max_rating, sort_order, speed_multiplier)
-           VALUES (?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(category_id) DO UPDATE SET
-               gender=excluded.gender, category_name=excluded.category_name,
-               min_rating=excluded.min_rating, max_rating=excluded.max_rating,
-               sort_order=excluded.sort_order, speed_multiplier=excluded.speed_multiplier""",
-        (cid, gdr, cname, cmin, cmax, s_ord, spd),
-    )
+    # SEED DEFAULT CATEGORIES: Discrete .999 thresholds for clean promotions
+    default_cats = [
+        ("CAT_M_BEG", "MALE", "Beginner", 0.000, 0.999, 1, 1.00),
+        ("CAT_M_BEG_PLUS", "MALE", "Beginner+", 1.000, 1.999, 2, 1.00),
+        ("CAT_M_INT", "MALE", "Intermediate", 2.000, 3.499, 3, 1.00),
+        ("CAT_M_INT_PLUS", "MALE", "Intermediate+", 3.500, 4.499, 4, 1.00),
+        ("CAT_M_ADV", "MALE", "Advanced", 4.500, 5.499, 5, 1.00),
+        ("CAT_M_PRO", "MALE", "Pro", 5.500, 6.299, 6, 1.00),
+        ("CAT_M_ELITE", "MALE", "Elite", 6.300, 7.000, 7, 1.00),
+        ("CAT_F_BEG", "FEMALE", "Beginner", 0.000, 0.999, 1, 1.00),
+        ("CAT_F_BEG_PLUS", "FEMALE", "Beginner+", 1.000, 1.749, 2, 1.00),
+        ("CAT_F_INT", "FEMALE", "Intermediate", 1.750, 2.749, 3, 1.00),
+        ("CAT_F_INT_PLUS", "FEMALE", "Intermediate+", 2.750, 3.499, 4, 1.00),
+        ("CAT_F_ADV", "FEMALE", "Advanced", 3.500, 4.499, 5, 1.00),
+        ("CAT_F_PRO", "FEMALE", "Pro", 4.500, 5.499, 6, 1.00),
+        ("CAT_F_ELITE", "FEMALE", "Elite", 5.500, 7.000, 7, 1.00),
+    ]
+    for cid, gdr, cname, cmin, cmax, s_ord, spd in default_cats:
+        c.execute(
+            """INSERT INTO rating_categories 
+               (category_id, gender, category_name, min_rating, max_rating, sort_order, speed_multiplier)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(category_id) DO UPDATE SET
+                   gender=excluded.gender, category_name=excluded.category_name,
+                   min_rating=excluded.min_rating, max_rating=excluded.max_rating,
+                   sort_order=excluded.sort_order, speed_multiplier=excluded.speed_multiplier""",
+            (cid, gdr, cname, cmin, cmax, s_ord, spd),
+        )
 
-  official_formats = [
-      ("STD_B03", "Best of 3 Sets", "MULTI_SET", 1.00, None, None, 0, 1),
-      ("STD_B05", "Best of 5 Sets", "MULTI_SET", 1.00, None, None, 0, 1),
-      ("RACE_4", "Race to 4 Games", "RACE_GAMES", 0.50, 4, None, 0, 1),
-      ("RACE_5", "Race to 5 Games", "RACE_GAMES", 0.60, 5, None, 0, 1),
-      ("RACE_6", "Race to 6 Games", "RACE_GAMES", 0.70, 6, None, 0, 1),
-      ("RACE_7", "Race to 7 Games", "RACE_GAMES", 0.80, 7, None, 0, 1),
-      ("RACE_9", "Race to 9 Games", "RACE_GAMES", 0.80, 9, None, 0, 1),
-      ("RACE_11", "Race to 11 Games", "RACE_GAMES", 0.90, 11, None, 0, 1),
-      ("AMER_12", "Americano 12 Points", "AMERICANO", 0.30, None, 12, 0, 1),
-      ("MEX_12", "Mexicano 12 Points", "MEXICANO", 0.30, None, 12, 0, 1),
-      ("AMER_16", "Americano 16 Points", "AMERICANO", 0.30, None, 16, 0, 1),
-      ("MEX_16", "Mexicano 16 Points", "MEXICANO", 0.30, None, 16, 0, 1),
-      ("AMER_20", "Americano 20 Points", "AMERICANO", 0.30, None, 20, 0, 1),
-      ("MEX_20", "Mexicano 20 Points", "MEXICANO", 0.30, None, 20, 0, 1),
-      ("AMER_24", "Americano 24 Points", "AMERICANO", 0.30, None, 24, 0, 1),
-      ("MEX_24", "Mexicano 24 Points", "MEXICANO", 0.30, None, 24, 0, 1),
-      ("AMER_28", "Americano 28 Points", "AMERICANO", 0.30, None, 28, 0, 1),
-      ("MEX_28", "Mexicano 28 Points", "MEXICANO", 0.30, None, 28, 0, 1),
-      ("AMER_32", "Americano 32 Points", "AMERICANO", 0.35, None, 32, 0, 1),
-      ("MEX_32", "Mexicano 32 Points", "MEXICANO", 0.35, None, 32, 0, 1),
-  ]
-  for fid, fname, cat, mc, tg, tp, is_sb, is_a in official_formats:
-    c.execute(
-        """INSERT INTO match_formats (format_id, format_name, category, mc_weight, target_games, total_points, is_session_bound, is_active)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(format_id) DO UPDATE SET 
-               format_name=excluded.format_name, category=excluded.category, target_games=excluded.target_games,
-               total_points=excluded.total_points, is_session_bound=excluded.is_session_bound, is_active=excluded.is_active""",
-        (fid, fname, cat, mc, tg, tp, is_sb, is_a),
-    )
+    official_formats = [
+        ("STD_B03", "Best of 3 Sets", "MULTI_SET", 1.00, None, None, 0, 1),
+        ("STD_B05", "Best of 5 Sets", "MULTI_SET", 1.00, None, None, 0, 1),
+        ("RACE_4", "Race to 4 Games", "RACE_GAMES", 0.50, 4, None, 0, 1),
+        ("RACE_5", "Race to 5 Games", "RACE_GAMES", 0.60, 5, None, 0, 1),
+        ("RACE_6", "Race to 6 Games", "RACE_GAMES", 0.70, 6, None, 0, 1),
+        ("RACE_7", "Race to 7 Games", "RACE_GAMES", 0.80, 7, None, 0, 1),
+        ("RACE_9", "Race to 9 Games", "RACE_GAMES", 0.80, 9, None, 0, 1),
+        ("RACE_11", "Race to 11 Games", "RACE_GAMES", 0.90, 11, None, 0, 1),
+        ("AMER_12", "Americano 12 Points", "AMERICANO", 0.30, None, 12, 0, 1),
+        ("MEX_12", "Mexicano 12 Points", "MEXICANO", 0.30, None, 12, 0, 1),
+        ("AMER_16", "Americano 16 Points", "AMERICANO", 0.30, None, 16, 0, 1),
+        ("MEX_16", "Mexicano 16 Points", "MEXICANO", 0.30, None, 16, 0, 1),
+        ("AMER_20", "Americano 20 Points", "AMERICANO", 0.30, None, 20, 0, 1),
+        ("MEX_20", "Mexicano 20 Points", "MEXICANO", 0.30, None, 20, 0, 1),
+        ("AMER_24", "Americano 24 Points", "AMERICANO", 0.30, None, 24, 0, 1),
+        ("MEX_24", "Mexicano 24 Points", "MEXICANO", 0.30, None, 24, 0, 1),
+        ("AMER_28", "Americano 28 Points", "AMERICANO", 0.30, None, 28, 0, 1),
+        ("MEX_28", "Mexicano 28 Points", "MEXICANO", 0.30, None, 28, 0, 1),
+        ("AMER_32", "Americano 32 Points", "AMERICANO", 0.35, None, 32, 0, 1),
+        ("MEX_32", "Mexicano 32 Points", "MEXICANO", 0.35, None, 32, 0, 1),
+    ]
+    for fid, fname, cat, mc, tg, tp, is_sb, is_a in official_formats:
+        c.execute(
+            """INSERT INTO match_formats (format_id, format_name, category, mc_weight, target_games, total_points, is_session_bound, is_active)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(format_id) DO UPDATE SET 
+                   format_name=excluded.format_name, category=excluded.category, target_games=excluded.target_games,
+                   total_points=excluded.total_points, is_session_bound=excluded.is_session_bound, is_active=excluded.is_active""",
+            (fid, fname, cat, mc, tg, tp, is_sb, is_a),
+        )
 
-  seed_factory_parameters(c, overwrite_existing=False)
-  conn.commit()
-  conn.close()
+    seed_factory_parameters(c, overwrite_existing=False)
+    conn.commit()
+    conn.close()
 
 
 def seed_factory_parameters(cursor, overwrite_existing=False):
-  master_params = [
-      (
-          "R_MIN",
-          0.000,
-          1,
-          "Scale Absolute Floor",
-          "Lowest possible rating.",
-          "Clamps rating drops at 0.000.",
-          "1. Core Bounds & Drag",
-      ),
-      (
-          "R_MAX",
-          7.000,
-          1,
-          "Scale Absolute Ceiling",
-          "Maximum rating ceiling.",
-          "LOCKED at 7.000.",
-          "1. Core Bounds & Drag",
-      ),
-      (
-          "R_ELITE_THRESHOLD",
-          6.300,
-          1,
-          "Elite Drag Gate",
-          "Rating where drag starts.",
-          "Lowering applies drag earlier.",
-          "1. Core Bounds & Drag",
-      ),
-      (
-          "ELITE_DRAG_EXPONENT",
-          2.5,
-          1,
-          "Elite Drag Curvature",
-          "Steepness of ceiling resistance.",
-          "Higher values block 7.000.",
-          "1. Core Bounds & Drag",
-      ),
-      (
-          "POWER_MEAN_P",
-          3.0,
-          1,
-          "Doubles Cubic Exponent",
-          "Power mean anchor exponent.",
-          "3.0 gives 70/30 anchor bias.",
-          "2. Volatility & Odds",
-      ),
-      (
-          "LOGISTIC_BETA",
-          2.0,
-          1,
-          "Logistic Scale Factor",
-          "Odds curve steepness.",
-          "Lowering boosts upset deltas.",
-          "2. Volatility & Odds",
-      ),
-      (
-          "K_MAX",
-          0.400,
-          1,
-          "Beginner Max Volatility",
-          "Step size at R=0.000.",
-          "Higher values accelerate progression.",
-          "2. Volatility & Odds",
-      ),
-      (
-          "K_MIN",
-          0.080,
-          1,
-          "Pro Min Volatility",
-          "Step size at R=7.000.",
-          "Lower values lock pro ratings.",
-          "2. Volatility & Odds",
-      ),
-      (
-          "MARGIN_BASE",
-          0.80,
-          1,
-          "Margin Floor Factor",
-          "Min score factor for close matches.",
-          "Points floor for tight finishes.",
-          "3. Margins & Rightsizing",
-      ),
-      (
-          "MARGIN_SCALE",
-          0.40,
-          1,
-          "Margin Blowout Scale",
-          "Max bonus factor for blowouts.",
-          "Full blowout bonus = Base + Scale.",
-          "3. Margins & Rightsizing",
-      ),
-      (
-          "MAX_PROVISIONAL_DELTA",
-          0.750,
-          1,
-          "Placement Ceiling",
-          "Max points won in interpolation.",
-          "Single-match placement cap.",
-          "3. Margins & Rightsizing",
-      ),
-      (
-          "PROVISIONAL_ABSORPTION_ALPHA",
-          0.45,
-          1,
-          "Rightsizing Velocity",
-          "Speed toward performance rating.",
-          "Higher = faster rightsizing.",
-          "3. Margins & Rightsizing",
-      ),
-      (
-          "PROVISIONAL_BYPASS_EXCHANGE_CAP",
-          1,
-          1,
-          "Provisional Cap Bypass",
-          "Allows rightsizing blowouts to reach placement ceiling.",
-          "Default 1 (Active).",
-          "3. Margins & Rightsizing",
-      ),
-      (
-          "DISPLAY_RATING_SOFT_FLOOR",
-          0.050,
-          1,
-          "Display Soft Floor",
-          "Buffer preventing minor drops.",
-          "Default 0.050.",
-          "3. Margins & Rightsizing",
-      ),
-      (
-          "ALLOW_UNDERDOG_LOSS_DISCOVERY",
-          1.0,
-          1,
-          "Underdog Defeat Discovery Toggle",
-          "1.0 allows fighting underdogs to gain discovery rating points on"
-          " tight defeats; 0.0 locks defeats to non-positive.",
-          "Turn ON to help underdogs climb without needing wins; turn OFF to"
-          " enforce absolute loss non-positivity.",
-          "3. Margins & Rightsizing",
-      ),
-      (
-          "UNDERDOG_LOSS_MIN_GAME_SHARE",
-          0.400,
-          1,
-          "Underdog Loss Game Share Floor",
-          "Minimum fraction of total games an underdog must win (e.g. 0.40 ="
-          " 40%) to trigger Micro-Discovery.",
-          "Higher values (0.45) require tighter scores like 6-7; lower values"
-          " (0.35) reward 4-6.",
-          "3. Margins & Rightsizing",
-      ),
-      (
-          "UNDERDOG_LOSS_MIN_RATING_GAP",
-          1.000,
-          1,
-          "Underdog Loss Opponent Rating Gap",
-          "Minimum MMR gap opponents must hold above player (e.g. 1.00 MMR) to"
-          " qualify for defeat discovery.",
-          "Ensures discovery points only fire against legitimate higher-tier"
-          " opponents.",
-          "3. Margins & Rightsizing",
-      ),
-      (
-          "UNDERDOG_LOSS_MAX_DELTA",
-          0.0300,
-          1,
-          "Underdog Loss Max Gain Ceiling",
-          "Hard ceiling on rating points gained from a defeat.",
-          "Default 0.0300 (+0.03 MMR max).",
-          "3. Margins & Rightsizing",
-      ),
-      (
-          "RIGHTSIZING_ACCURACY_CEILING",
-          80.0,
-          1,
-          "Post-PR Rightsizing Accuracy Ceiling",
-          "Accuracy threshold where rightsizing interpolation tapers off"
-          " completely.",
-          "Allows post-PR verified players to continue rightsizing smoothly"
-          " until fully verified.",
-          "3. Margins & Rightsizing",
-      ),
-      (
-          "RIGHTSIZING_TAPER_MAX_WEIGHT",
-          0.350,
-          1,
-          "Post-PR Rightsizing Max Weight",
-          "Maximum interpolation blend factor for newly graduated verified"
-          " players.",
-          "Tuned to 0.350 for gradual smoothing.",
-          "3. Margins & Rightsizing",
-      ),
-      (
-          "EARNED_ANCHOR_MIN_MATCHES",
-          35.0,
-          1,
-          "Earned Anchor Min Matches",
-          "Career verified matches required for organic Earned Anchor"
-          " promotion.",
-          "Requires deep game volume.",
-          "3. Margins & Rightsizing",
-      ),
-      (
-          "EARNED_ANCHOR_MIN_OPPONENTS",
-          20.0,
-          1,
-          "Earned Anchor Min Opponents",
-          "Distinct opponents required for organic Earned Anchor promotion.",
-          "Prevents clique-based promotion.",
-          "3. Margins & Rightsizing",
-      ),
-      (
-          "EARNED_ANCHOR_MAX_RD",
-          55.0,
-          1,
-          "Earned Anchor Max Uncertainty (RD)",
-          "Rating deviation must be at or below this certainty threshold.",
-          "Ensures high statistical confidence.",
-          "3. Margins & Rightsizing",
-      ),
-      (
-          "EARNED_ANCHOR_MIN_ACCURACY",
-          85.0,
-          1,
-          "Earned Anchor Min Rating Accuracy %",
-          "Rating accuracy percentage required for Earned Anchor tier.",
-          "High trust threshold.",
-          "3. Margins & Rightsizing",
-      ),
-      (
-          "EARNED_ANCHOR_ROLLING_DAYS",
-          45.0,
-          1,
-          "Earned Anchor Recency Window (Days)",
-          "Rolling days window to check recent match activity.",
-          "Lapses anchor status if player goes idle.",
-          "3. Margins & Rightsizing",
-      ),
-      (
-          "EARNED_ANCHOR_MIN_ROLLING_MATCHES",
-          3.0,
-          1,
-          "Earned Anchor Min Recency Matches",
-          "Matches required in recent rolling window to retain active anchor"
-          " authority.",
-          "Guarantees active touch.",
-          "3. Margins & Rightsizing",
-      ),
-      (
-          "ENABLE_RETROACTIVE_INGESTION",
-          1.0,
-          1,
-          "Retroactive / Attestation Ingestion Toggle",
-          "1.0 enables historical snapshot additive match commits; 0.0 restricts"
-          " matches strictly to current sequence.",
-          "Allows backdated attestation without rolling back subsequent"
-          " matches.",
-          "5. Exchange Caps & Security",
-      ),
-      (
-          "MAX_RETROACTIVE_LOOKBACK_HOURS",
-          72.0,
-          1,
-          "Max Retroactive Ingestion Window (Hours)",
-          "Maximum allowable historical lookback for match timestamps.",
-          "Prevents stale match backdating.",
-          "5. Exchange Caps & Security",
-      ),
-      (
-          "ATTESTATION_AUTO_WINDOW_HOURS",
-          3.0,
-          1,
-          "Attestation Contestation Window (Hours)",
-          "Window before uncontested matches auto-commit.",
-          "Default 3.0 hours.",
-          "5. Exchange Caps & Security",
-      ),
-      (
-          "ICE_OUT_GAP_TIER_1",
-          1.50,
-          1,
-          "Ice-Out Gap Threshold 1",
-          "Min partner gap to trigger 20% dampening.",
-          "Applies to Anchor.",
-          "4. Partner Guardrails",
-      ),
-      (
-          "ICE_OUT_MULT_TIER_1",
-          0.20,
-          1,
-          "Ice-Out Dampener 1",
-          "Multiplier applied if Tier 1 Gap breached.",
-          "0.20 = 80% loss reduction.",
-          "4. Partner Guardrails",
-      ),
-      (
-          "ICE_OUT_GAP_TIER_2",
-          2.00,
-          1,
-          "Ice-Out Gap Threshold 2",
-          "Min partner gap to trigger 5% dampening.",
-          "Extreme freeze-outs.",
-          "4. Partner Guardrails",
-      ),
-      (
-          "ICE_OUT_MULT_TIER_2",
-          0.05,
-          1,
-          "Ice-Out Dampener 2",
-          "Multiplier applied if Tier 2 Gap breached.",
-          "0.05 = 95% loss reduction.",
-          "4. Partner Guardrails",
-      ),
-      (
-          "ANTI_CARRY_GAP_TIER_1",
-          1.75,
-          1,
-          "Anti-Carry Gap Threshold 1",
-          "Min gap to trigger 50% carry dampening.",
-          "Applies to weaker partner.",
-          "4. Partner Guardrails",
-      ),
-      (
-          "ANTI_CARRY_MULT_TIER_1",
-          0.50,
-          1,
-          "Anti-Carry Dampener 1",
-          "Multiplier applied if Tier 1 carry breached.",
-          "0.50 = 50% gain reduction.",
-          "4. Partner Guardrails",
-      ),
-      (
-          "ANTI_CARRY_GAP_TIER_2",
-          2.50,
-          1,
-          "Anti-Carry Gap Threshold 2",
-          "Min gap to trigger 25% carry dampening.",
-          "Extreme tow jobs.",
-          "4. Partner Guardrails",
-      ),
-      (
-          "ANTI_CARRY_MULT_TIER_2",
-          0.25,
-          1,
-          "Anti-Carry Dampener 2",
-          "Multiplier applied if Tier 2 carry breached.",
-          "0.25 = 75% gain reduction.",
-          "4. Partner Guardrails",
-      ),
-      (
-          "MUTUAL_PROV_MAX_PARTNER_GAP",
-          1.500,
-          1,
-          "Mutual Prov Max Partner Gap",
-          "Max initial gap between unrated teammates before Anti-Carry"
-          " engages.",
-          "Blocks true beginners from inflating off self-declared 4.0+"
-          " friends.",
-          "4. Partner Guardrails",
-      ),
-      (
-          "MAX_24H_PAIRWISE_EXCHANGE_CAP",
-          0.150,
-          1,
-          "24H Pairwise Anti-Collusion Cap",
-          "Max net transfer between specific opponent cluster in 24h.",
-          "Targeted anti-collusion.",
-          "5. Exchange Caps & Security",
-      ),
-      (
-          "MAX_24H_GLOBAL_CASUAL_CAP",
-          0.250,
-          1,
-          "24H Global Daily Casual Governor",
-          "Max cumulative net casual points across all opponents in 24h.",
-          "Macro daily movement governor.",
-          "5. Exchange Caps & Security",
-      ),
-      (
-          "MAX_24H_EXCHANGE_CAP",
-          0.150,
-          1,
-          "24H Casual Cap (Legacy)",
-          "Fallback single-window cap ceiling.",
-          "Legacy parameter.",
-          "5. Exchange Caps & Security",
-      ),
-      (
-          "PROVISIONAL_CAP_MULTIPLIER",
-          2.5,
-          1,
-          "Provisional Cap Relaxer",
-          "Multiplier on 24H cap for PRs.",
-          "Allows accelerated placement.",
-          "5. Exchange Caps & Security",
-      ),
-      (
-          "SESSION_EXCHANGE_CAP",
-          0.300,
-          1,
-          "Verified Session Cap",
-          "Cap for verified club events.",
-          "Doubles point limits for mixers.",
-          "5. Exchange Caps & Security",
-      ),
-      (
-          "MIN_SESSION_PLAYERS",
-          6,
-          1,
-          "Session Participant Floor",
-          "Min players required to unlock session cap.",
-          "Events with fewer revert to casual caps.",
-          "5. Exchange Caps & Security",
-      ),
-      (
-          "GRAPH_DAMPENING_MIN_OPPONENTS",
-          5.0,
-          1,
-          "Graph Dampening Min Opponents",
-          "Minimum distinct opponents required before W_G reaches 1.0.",
-          "Increase in large clubs to curb clique farming.",
-          "5. Exchange Caps & Security",
-      ),
-      (
-          "GRAPH_CENTRALITY_TARGET",
-          0.200,
-          1,
-          "Graph Centrality Target",
-          "Eigenvector centrality baseline required before full rating gains.",
-          "Lower for casual recreational venues; raise for league finals.",
-          "5. Exchange Caps & Security",
-      ),
-      (
-          "TOURNAMENT_MULTIPLIER_ACTIVE",
-          1,
-          1,
-          "Tournament Multiplier Toggle",
-          "Activates stakes multiplier for tournament.",
-          "1 = Active.",
-          "5. Exchange Caps & Security",
-      ),
-      (
-          "TOURNAMENT_STAKES_MULTIPLIER",
-          1.15,
-          1,
-          "Tournament Stakes Multiplier",
-          "Rating delta multiplier for tournaments.",
-          "Default 1.15 (+15%).",
-          "5. Exchange Caps & Security",
-      ),
-      (
-          "RD_MIN",
-          30.0,
-          1,
-          "Certainty Floor",
-          "Absolute uncertainty floor.",
-          "Prevents RD dropping below 30.0.",
-          "6. Uncertainty & Rust",
-      ),
-      (
-          "RD_MAX",
-          350.0,
-          1,
-          "Unrated Starting RD",
-          "Uncertainty assigned at registration.",
-          "Starting uncertainty.",
-          "6. Uncertainty & Rust",
-      ),
-      (
-          "RD_INFO_VARIANCE",
-          110.0,
-          1,
-          "Contraction Speed",
-          "Denominator in RD shrinkage. Higher values contract RD slower.",
-          "Tuned to 110.0 for gradual, secure contraction.",
-          "6. Uncertainty & Rust",
-      ),
-      (
-          "INACTIVITY_CONSTANT",
-          12.0,
-          1,
-          "Inactivity Rust Rate (Monthly)",
-          "Monthly uncertainty growth for background cron cycles.",
-          "Points of RD regained per month.",
-          "6. Uncertainty & Rust",
-      ),
-      (
-          "TEMPORAL_DRIFT_CONSTANT",
-          5.50,
-          1,
-          "Inactivity Drift Constant (c)",
-          "Daily uncertainty expansion constant.",
-          "Default 5.50.",
-          "6. Uncertainty & Rust",
-      ),
-      (
-          "INACTIVITY_GRACE_DAYS",
-          7.0,
-          1,
-          "Inactivity Grace Window (Days)",
-          "Days before temporal rust begins accumulating.",
-          "Default 7.0 days.",
-          "6. Uncertainty & Rust",
-      ),
-      (
-          "INACTIVITY_REPROVISION_THRESHOLD",
-          100.0,
-          1,
-          "Inactivity Reprovisioning RD Ceiling",
-          "RD threshold where inactive players are flagged for [PR].",
-          "Default 100.0.",
-          "6. Uncertainty & Rust",
-      ),
-      (
-          "COHORT_FACTOR_0_PROV",
-          1.00,
-          1,
-          "Omega 0 Factor",
-          "Contraction against verified anchors.",
-          "100% gain.",
-          "6. Uncertainty & Rust",
-      ),
-      (
-          "COHORT_FACTOR_1_PROV",
-          0.75,
-          1,
-          "Omega 1 Factor",
-          "Contraction with 1 unrated player.",
-          "75% gain.",
-          "6. Uncertainty & Rust",
-      ),
-      (
-          "COHORT_FACTOR_2_PROV",
-          0.50,
-          1,
-          "Omega 2 Factor",
-          "Contraction with 2 unrated players.",
-          "50% gain.",
-          "6. Uncertainty & Rust",
-      ),
-      (
-          "COHORT_FACTOR_3_PROV",
-          0.25,
-          1,
-          "Omega 3 Factor",
-          "Contraction with 3+ unrated players.",
-          "25% sandbox.",
-          "6. Uncertainty & Rust",
-      ),
-      (
-          "PROVISIONAL_RD_CONTRACTION_RATIO",
-          0.20,
-          1,
-          "Provisional RD Shrink Modifier",
-          "Slows RD drop for unrated players.",
-          "Tuned to 0.20 to keep players provisional across adequate sample.",
-          "7. Accuracy & Tri-Gates",
-      ),
-      (
-          "PROVISIONAL_ACCURACY_DAMPENER",
-          0.40,
-          1,
-          "Provisional Accuracy Gain Cap",
-          "Restricts accuracy gain during placement.",
-          "Caps visual accuracy.",
-          "7. Accuracy & Tri-Gates",
-      ),
-      (
-          "ACCURACY_HIGH_TRUST_FLOOR",
-          65.0,
-          1,
-          "Accuracy High-Trust Threshold",
-          "Inflection boundary where rapid linear ramp transitions to"
-          " asymptotic ascent.",
-          "Ratings above 65% are considered established.",
-          "7. Accuracy & Tri-Gates",
-      ),
-      (
-          "ACCURACY_TARGET_MATCHES_ELITE",
-          100.0,
-          1,
-          "100% Accuracy Matches Quota",
-          "Match volume required to reach near-100% accuracy.",
-          "Demands deep match volume.",
-          "7. Accuracy & Tri-Gates",
-      ),
-      (
-          "ACCURACY_TARGET_OPPONENTS_ELITE",
-          50.0,
-          1,
-          "100% Accuracy Opponents Quota",
-          "Unique opponents required to reach near-100% accuracy.",
-          "Prevents club clique inflation.",
-          "7. Accuracy & Tri-Gates",
-      ),
-      (
-          "ACCURACY_TARGET_CITY_BRIDGES",
-          25.0,
-          1,
-          "100% Accuracy City Bridges Quota",
-          "Away municipal matches required for complete global calibration.",
-          "Ensures regional diffusion.",
-          "7. Accuracy & Tri-Gates",
-      ),
-      (
-          "ACCURACY_TARGET_COUNTRY_BRIDGES",
-          10.0,
-          1,
-          "100% Accuracy Country Bridges Quota",
-          "Cross-border matches required for international anchor accuracy.",
-          "Guarantees international anchor parity.",
-          "7. Accuracy & Tri-Gates",
-      ),
-      (
-          "ACCURACY_CURVATURE_GAMMA",
-          1.40,
-          1,
-          "Asymptotic Curvature Gamma",
-          "Power exponent governing the steepness of high-trust accuracy"
-          " ascent.",
-          "Higher values (1.6-2.0) make 95%+ exponentially harder to achieve.",
-          "7. Accuracy & Tri-Gates",
-      ),
-      (
-          "ACCURACY_WEIGHT_RD",
-          0.50,
-          1,
-          "Accuracy Weight: RD",
-          "Weight for Pillar 1 (Certainty).",
-          "Controls influence of RD.",
-          "7. Accuracy & Tri-Gates",
-      ),
-      (
-          "ACCURACY_WEIGHT_MATCHES",
-          0.25,
-          1,
-          "Accuracy Weight: Matches",
-          "Weight for Pillar 2 (Match Depth).",
-          "Controls importance of volume.",
-          "7. Accuracy & Tri-Gates",
-      ),
-      (
-          "ACCURACY_WEIGHT_DIVERSITY",
-          0.25,
-          1,
-          "Accuracy Weight: Diversity",
-          "Weight for Pillar 3 (Network).",
-          "Controls importance of unique opponents.",
-          "7. Accuracy & Tri-Gates",
-      ),
-      (
-          "TIER_PROVISIONAL_MAX",
-          69.99,
-          1,
-          "Provisional Score Ceiling",
-          "Upper score bound for Tier 1.",
-          "Players below remain [PR].",
-          "7. Accuracy & Tri-Gates",
-      ),
-      (
-          "TARGET_MATCHES_PROVISIONAL",
-          3,
-          1,
-          "Target Matches: Provisional",
-          "Match quota during onboarding.",
-          "Satisfies depth.",
-          "7. Accuracy & Tri-Gates",
-      ),
-      (
-          "TARGET_OPPONENTS_PROVISIONAL",
-          2,
-          1,
-          "Target Opponents: Provisional",
-          "Opponent quota during onboarding.",
-          "Satisfies diversity.",
-          "7. Accuracy & Tri-Gates",
-      ),
-      (
-          "PROVISIONAL_RD_GATE",
-          100.0,
-          1,
-          "Tri-Gate Max RD",
-          "RD must be <= 100 to exit [PR].",
-          "Uncertainty ceiling to graduate.",
-          "7. Accuracy & Tri-Gates",
-      ),
-      (
-          "PROVISIONAL_MIN_MATCHES",
-          10,
-          1,
-          "Tri-Gate Min Matches",
-          "Verified matches to exit [PR].",
-          "Volume required to shed badge.",
-          "7. Accuracy & Tri-Gates",
-      ),
-      (
-          "PROVISIONAL_MIN_OPPONENTS",
-          8,
-          1,
-          "Tri-Gate Min Opponents",
-          "Unique opponents to exit [PR].",
-          "Distinct opponents required.",
-          "7. Accuracy & Tri-Gates",
-      ),
-      (
-          "ISLAND_ACCURACY_CAP",
-          80.0,
-          1,
-          "Island Geographic Cap",
-          "Max accuracy if City has 0 bridges.",
-          "Caps accuracy.",
-          "7. Accuracy & Tri-Gates",
-      ),
-      (
-          "BRIDGE_RD_THRESHOLD",
-          80.0,
-          1,
-          "Bridge Max RD",
-          "Max RD to qualify as Bridge.",
-          "Count if RD <= 80.",
-          "8. Hawking Macro",
-      ),
-      (
-          "BRIDGE_MIN_MATCHES",
-          5,
-          1,
-          "Bridge Min Matches",
-          "Away matches required to link cities.",
-          "Matches required before linking.",
-          "8. Hawking Macro",
-      ),
-      (
-          "CIRCUIT_BREAKER",
-          0.0250,
-          1,
-          "Auto Cron Safety Ceiling",
-          "Max shift per weekly cycle.",
-          "Limits automated macro shifts.",
-          "8. Hawking Macro",
-      ),
-      (
-          "GLOBAL_MEDIAN_TARGET",
-          3.0000,
-          1,
-          "Global Median Target",
-          "Anchor standard for national calibration.",
-          "Target median rating for active verified player pool.",
-          "8. Hawking Macro",
-      ),
-      (
-          "HAWKING_MIN_ACTIVE_VERIFIED_PLAYERS",
-          60.0,
-          1,
-          "Min Active Verified Core",
-          "Required verified residents (RD <= 100 with recent matches) for"
-          " readiness.",
-          "Blocks ghost town registration inflation.",
-          "8. Hawking Macro",
-      ),
-      (
-          "HAWKING_TARGET_MATCH_DEPTH",
-          15.0,
-          1,
-          "Target Municipal Activity Depth",
-          "Average match depth per active resident before city reaches green"
-          " status.",
-          "Ensures deep local match volume.",
-          "8. Hawking Macro",
-      ),
-      (
-          "HAWKING_TARGET_BRIDGE_NODES",
-          5.0,
-          1,
-          "Target Bridge Nodes (K)",
-          "Qualified traveler nodes required for full connectivity.",
-          "Ensures inter-city calibration.",
-          "8. Hawking Macro",
-      ),
-      (
-          "HAWKING_TIKHONOV_LAMBDA",
-          3.0,
-          1,
-          "Tikhonov Shrinkage Lambda",
-          "Dampening constant in bridge confidence: K / (K + lambda).",
-          "Lower values trust bridge evidence faster.",
-          "8. Hawking Macro",
-      ),
-      (
-          "HAWKING_WEIGHT_ACTIVE_PLAYERS",
-          40.0,
-          1,
-          "Readiness Weight: Active Core",
-          "Pillar 1 max score for active verified player liquidity.",
-          "Default 40.0 pts.",
-          "8. Hawking Macro",
-      ),
-      (
-          "HAWKING_WEIGHT_MATCH_DEPTH",
-          30.0,
-          1,
-          "Readiness Weight: Match Depth",
-          "Pillar 2 max score for local match depth ratio.",
-          "Default 30.0 pts.",
-          "8. Hawking Macro",
-      ),
-      (
-          "HAWKING_WEIGHT_BRIDGES",
-          30.0,
-          1,
-          "Readiness Weight: Traveler Bridges",
-          "Pillar 3 max score for cross-city bridge connectivity.",
-          "Default 30.0 pts.",
-          "8. Hawking Macro",
-      ),
-      (
-          "HAWKING_READINESS_GREEN_GATE",
-          80.0,
-          1,
-          "Readiness Green Gate %",
-          "Readiness score percentage required to unlock Green deployment"
-          " status.",
-          "Default 80.0%.",
-          "8. Hawking Macro",
-      ),
-      (
-          "HAWKING_READINESS_YELLOW_GATE",
-          50.0,
-          1,
-          "Readiness Yellow Gate %",
-          "Readiness score percentage for Yellow maturing status.",
-          "Default 50.0%.",
-          "8. Hawking Macro",
-      ),
-      (
-          "MC_STD_B03",
-          1.000,
-          1,
-          "Format Multiplier: Best of 3 Sets",
-          "Confidence multiplier for Best of 3 Sets.",
-          "Full standard match.",
-          "9. Format Multipliers (M_C)",
-      ),
-      (
-          "MC_STD_B05",
-          1.000,
-          1,
-          "Format Multiplier: Best of 5 Sets",
-          "Confidence multiplier for Best of 5 Sets.",
-          "Full standard match.",
-          "9. Format Multipliers (M_C)",
-      ),
-      (
-          "MC_RACE_4",
-          0.500,
-          1,
-          "Format Multiplier: Race to 4 Games",
-          "Confidence multiplier for Race to 4 Games.",
-          "Short sprint set.",
-          "9. Format Multipliers (M_C)",
-      ),
-      (
-          "MC_RACE_5",
-          0.600,
-          1,
-          "Format Multiplier: Race to 5 Games",
-          "Confidence multiplier for Race to 5 Games.",
-          "Sprint set.",
-          "9. Format Multipliers (M_C)",
-      ),
-      (
-          "MC_RACE_6",
-          0.700,
-          1,
-          "Format Multiplier: Race to 6 Games",
-          "Confidence multiplier for Race to 6 Games.",
-          "Standard single set.",
-          "9. Format Multipliers (M_C)",
-      ),
-      (
-          "MC_RACE_7",
-          0.800,
-          1,
-          "Format Multiplier: Race to 7 Games",
-          "Confidence multiplier for Race to 7 Games.",
-          "Extended single set.",
-          "9. Format Multipliers (M_C)",
-      ),
-      (
-          "MC_RACE_9",
-          0.800,
-          1,
-          "Format Multiplier: Race to 9 Games",
-          "Confidence multiplier for Race to 9 Games.",
-          "Pro set.",
-          "9. Format Multipliers (M_C)",
-      ),
-      (
-          "MC_RACE_11",
-          0.900,
-          1,
-          "Format Multiplier: Race to 11 Games",
-          "Confidence multiplier for Race to 11 Games.",
-          "Extended pro set.",
-          "9. Format Multipliers (M_C)",
-      ),
-      (
-          "MC_AMER_12",
-          0.300,
-          1,
-          "Format Multiplier: Americano 12",
-          "Confidence multiplier for Americano 12.",
-          "Social mixer weight.",
-          "9. Format Multipliers (M_C)",
-      ),
-      (
-          "MC_MEX_12",
-          0.300,
-          1,
-          "Format Multiplier: Mexicano 12",
-          "Confidence multiplier for Mexicano 12.",
-          "Social mixer weight.",
-          "9. Format Multipliers (M_C)",
-      ),
-      (
-          "AMER_16",
-          0.300,
-          1,
-          "Format Multiplier: Americano 16",
-          "Confidence multiplier for Americano 16.",
-          "Social mixer weight.",
-          "9. Format Multipliers (M_C)",
-      ),
-      (
-          "MC_MEX_16",
-          0.300,
-          1,
-          "Format Multiplier: Mexicano 16",
-          "Confidence multiplier for Mexicano 16.",
-          "Social mixer weight.",
-          "9. Format Multipliers (M_C)",
-      ),
-      (
-          "MC_AMER_20",
-          0.300,
-          1,
-          "Format Multiplier: Americano 20",
-          "Confidence multiplier for Americano 20.",
-          "Social mixer weight.",
-          "9. Format Multipliers (M_C)",
-      ),
-      (
-          "MC_MEX_20",
-          0.300,
-          1,
-          "Format Multiplier: Mexicano 20",
-          "Confidence multiplier for Mexicano 20.",
-          "Social mixer weight.",
-          "9. Format Multipliers (M_C)",
-      ),
-      (
-          "MC_AMER_24",
-          0.300,
-          1,
-          "Format Multiplier: Americano 24",
-          "Confidence multiplier for Americano 24.",
-          "Social mixer weight.",
-          "9. Format Multipliers (M_C)",
-      ),
-      (
-          "MC_MEX_24",
-          0.300,
-          1,
-          "Format Multiplier: Mexicano 24",
-          "Confidence multiplier for Mexicano 24.",
-          "Social mixer weight.",
-          "9. Format Multipliers (M_C)",
-      ),
-      (
-          "MC_AMER_28",
-          0.300,
-          1,
-          "Format Multiplier: Americano 28",
-          "Confidence multiplier for Americano 28.",
-          "Social mixer weight.",
-          "9. Format Multipliers (M_C)",
-      ),
-      (
-          "MC_MEX_28",
-          0.300,
-          1,
-          "Format Multiplier: Mexicano 28",
-          "Confidence multiplier for Mexicano 28.",
-          "Social mixer weight.",
-          "9. Format Multipliers (M_C)",
-      ),
-      (
-          "MC_AMER_32",
-          0.350,
-          1,
-          "Format Multiplier: Americano 32",
-          "Confidence multiplier for Americano 32.",
-          "Social mixer weight.",
-          "9. Format Multipliers (M_C)",
-      ),
-      (
-          "MC_MEX_32",
-          0.350,
-          1,
-          "Format Multiplier: Mexicano 32",
-          "Confidence multiplier for Mexicano 32.",
-          "Social mixer weight.",
-          "9. Format Multipliers (M_C)",
-      ),
-  ]
-  for k, v, act, tit, desc, tune, grp in master_params:
-    cursor.execute(
-        """INSERT INTO global_config VALUES (?, ?, ?, ?, ?, ?, ?) 
-           ON CONFLICT(param_key) DO UPDATE SET 
-               title=excluded.title, description=excluded.description, 
-               tuning_guide=excluded.tuning_guide, module_group=excluded.module_group""",
-        (k, v, act, tit, desc, tune, grp),
-    )
+    master_params = [
+        ("R_MIN", 0.000, 1, "Scale Absolute Floor", "Lowest possible rating.", "Clamps rating drops at 0.000.", "1. Core Bounds & Drag"),
+        ("R_MAX", 7.000, 1, "Scale Absolute Ceiling", "Maximum rating ceiling.", "LOCKED at 7.000.", "1. Core Bounds & Drag"),
+        ("R_ELITE_THRESHOLD", 6.300, 1, "Elite Drag Gate", "Rating where drag starts.", "Lowering applies drag earlier.", "1. Core Bounds & Drag"),
+        ("ELITE_DRAG_EXPONENT", 2.5, 1, "Elite Drag Curvature", "Steepness of ceiling resistance.", "Higher values block 7.000.", "1. Core Bounds & Drag"),
+        ("POWER_MEAN_P", 3.0, 1, "Doubles Cubic Exponent", "Power mean anchor exponent.", "3.0 gives 70/30 anchor bias.", "2. Volatility & Odds"),
+        ("LOGISTIC_BETA", 2.0, 1, "Logistic Scale Factor", "Odds curve steepness.", "Lowering boosts upset deltas.", "2. Volatility & Odds"),
+        ("K_MAX", 0.400, 1, "Beginner Max Volatility", "Step size at R=0.000.", "Higher values accelerate progression.", "2. Volatility & Odds"),
+        ("K_MIN", 0.080, 1, "Pro Min Volatility", "Step size at R=7.000.", "Lower values lock pro ratings.", "2. Volatility & Odds"),
+        ("MARGIN_BASE", 0.80, 1, "Margin Floor Factor", "Min score factor for close matches.", "Points floor for tight finishes.", "3. Margins & Rightsizing"),
+        ("MARGIN_SCALE", 0.40, 1, "Margin Blowout Scale", "Max bonus factor for blowouts.", "Full blowout bonus = Base + Scale.", "3. Margins & Rightsizing"),
+        ("MAX_PROVISIONAL_DELTA", 0.750, 1, "Placement Ceiling", "Max points won in interpolation.", "Single-match placement cap.", "3. Margins & Rightsizing"),
+        ("PROVISIONAL_ABSORPTION_ALPHA", 0.45, 1, "Rightsizing Velocity", "Speed toward performance rating.", "Higher = faster rightsizing.", "3. Margins & Rightsizing"),
+        ("PROVISIONAL_BYPASS_EXCHANGE_CAP", 1, 1, "Provisional Cap Bypass", "Allows rightsizing blowouts to reach placement ceiling.", "Default 1 (Active).", "3. Margins & Rightsizing"),
+        ("DISPLAY_RATING_SOFT_FLOOR", 0.050, 1, "Display Soft Floor", "Buffer preventing minor drops.", "Default 0.050.", "3. Margins & Rightsizing"),
+        ("ALLOW_UNDERDOG_LOSS_DISCOVERY", 1.0, 1, "Underdog Defeat Discovery Toggle", "1.0 allows fighting underdogs to gain discovery rating points on tight defeats; 0.0 locks defeats to non-positive.", "Turn ON to help underdogs climb without needing wins; turn OFF to enforce absolute loss non-positivity.", "3. Margins & Rightsizing"),
+        ("UNDERDOG_LOSS_MIN_GAME_SHARE", 0.400, 1, "Underdog Loss Game Share Floor", "Minimum fraction of total games an underdog must win to trigger Micro-Discovery.", "Higher values (0.45) require tighter scores like 6-7; lower values reward 4-6.", "3. Margins & Rightsizing"),
+        ("UNDERDOG_LOSS_MIN_RATING_GAP", 1.000, 1, "Underdog Loss Opponent Rating Gap", "Minimum MMR gap opponents must hold above player to qualify for defeat discovery.", "Ensures discovery points only fire against legitimate higher-tier opponents.", "3. Margins & Rightsizing"),
+        ("UNDERDOG_LOSS_MAX_DELTA", 0.0300, 1, "Underdog Loss Max Gain Ceiling", "Hard ceiling on rating points gained from a defeat.", "Default 0.0300 (+0.03 MMR max).", "3. Margins & Rightsizing"),
+        ("RIGHTSIZING_ACCURACY_CEILING", 80.0, 1, "Post-PR Rightsizing Accuracy Ceiling", "Accuracy threshold where rightsizing interpolation tapers off completely.", "Allows post-PR verified players to continue rightsizing smoothly until fully verified.", "3. Margins & Rightsizing"),
+        ("RIGHTSIZING_TAPER_MAX_WEIGHT", 0.350, 1, "Post-PR Rightsizing Max Weight", "Maximum interpolation blend factor for newly graduated verified players.", "Tuned to 0.350 for gradual smoothing.", "3. Margins & Rightsizing"),
+        ("EARNED_ANCHOR_MIN_MATCHES", 35.0, 1, "Earned Anchor Min Matches", "Career verified matches required for organic Earned Anchor promotion.", "Requires deep game volume.", "3. Margins & Rightsizing"),
+        ("EARNED_ANCHOR_MIN_OPPONENTS", 20.0, 1, "Earned Anchor Min Opponents", "Distinct opponents required for organic Earned Anchor promotion.", "Prevents clique-based promotion.", "3. Margins & Rightsizing"),
+        ("EARNED_ANCHOR_MAX_RD", 55.0, 1, "Earned Anchor Max Uncertainty (RD)", "Rating deviation must be at or below this certainty threshold.", "Ensures high statistical confidence.", "3. Margins & Rightsizing"),
+        ("EARNED_ANCHOR_MIN_ACCURACY", 85.0, 1, "Earned Anchor Min Rating Accuracy %", "Rating accuracy percentage required for Earned Anchor tier.", "High trust threshold.", "3. Margins & Rightsizing"),
+        ("EARNED_ANCHOR_ROLLING_DAYS", 45.0, 1, "Earned Anchor Recency Window (Days)", "Rolling days window to check recent match activity.", "Lapses anchor status if player goes idle.", "3. Margins & Rightsizing"),
+        ("EARNED_ANCHOR_MIN_ROLLING_MATCHES", 3.0, 1, "Earned Anchor Min Recency Matches", "Matches required in recent rolling window to retain active anchor authority.", "Guarantees active touch.", "3. Margins & Rightsizing"),
+        ("ENABLE_RETROACTIVE_INGESTION", 1.0, 1, "Retroactive / Attestation Ingestion Toggle", "1.0 enables historical snapshot additive match commits; 0.0 restricts matches strictly to current sequence.", "Allows backdated attestation without rolling back subsequent matches.", "5. Exchange Caps & Security"),
+        ("MAX_RETROACTIVE_LOOKBACK_HOURS", 72.0, 1, "Max Retroactive Ingestion Window (Hours)", "Maximum allowable historical lookback for match timestamps.", "Prevents stale match backdating.", "5. Exchange Caps & Security"),
+        ("ATTESTATION_AUTO_WINDOW_HOURS", 3.0, 1, "Attestation Contestation Window (Hours)", "Window before uncontested matches auto-commit.", "Default 3.0 hours.", "5. Exchange Caps & Security"),
+        ("ICE_OUT_GAP_TIER_1", 1.50, 1, "Ice-Out Gap Threshold 1", "Min partner gap to trigger 20% dampening.", "Applies to Anchor.", "4. Partner Guardrails"),
+        ("ICE_OUT_MULT_TIER_1", 0.20, 1, "Ice-Out Dampener 1", "Multiplier applied if Tier 1 Gap breached.", "0.20 = 80% loss reduction.", "4. Partner Guardrails"),
+        ("ICE_OUT_GAP_TIER_2", 2.00, 1, "Ice-Out Gap Threshold 2", "Min partner gap to trigger 5% dampening.", "Extreme freeze-outs.", "4. Partner Guardrails"),
+        ("ICE_OUT_MULT_TIER_2", 0.05, 1, "Ice-Out Dampener 2", "Multiplier applied if Tier 2 Gap breached.", "0.05 = 95% loss reduction.", "4. Partner Guardrails"),
+        ("ANTI_CARRY_GAP_TIER_1", 1.75, 1, "Anti-Carry Gap Threshold 1", "Min gap to trigger 50% carry dampening.", "Applies to weaker partner.", "4. Partner Guardrails"),
+        ("ANTI_CARRY_MULT_TIER_1", 0.50, 1, "Anti-Carry Dampener 1", "Multiplier applied if Tier 1 carry breached.", "0.50 = 50% gain reduction.", "4. Partner Guardrails"),
+        ("ANTI_CARRY_GAP_TIER_2", 2.50, 1, "Anti-Carry Gap Threshold 2", "Min gap to trigger 25% carry dampening.", "Extreme tow jobs.", "4. Partner Guardrails"),
+        ("ANTI_CARRY_MULT_TIER_2", 0.25, 1, "Anti-Carry Dampener 2", "Multiplier applied if Tier 2 carry breached.", "0.25 = 75% gain reduction.", "4. Partner Guardrails"),
+        ("MUTUAL_PROV_MAX_PARTNER_GAP", 1.500, 1, "Mutual Prov Max Partner Gap", "Max initial gap between unrated teammates before Anti-Carry engages.", "Blocks true beginners from inflating off self-declared 4.0+ friends.", "4. Partner Guardrails"),
+        ("MAX_24H_PAIRWISE_EXCHANGE_CAP", 0.150, 1, "24H Pairwise Anti-Collusion Cap", "Max net transfer between specific opponent cluster in 24h.", "Targeted anti-collusion.", "5. Exchange Caps & Security"),
+        ("MAX_24H_GLOBAL_CASUAL_CAP", 0.250, 1, "24H Global Daily Casual Governor", "Max cumulative net casual points across all opponents in 24h.", "Macro daily movement governor.", "5. Exchange Caps & Security"),
+        ("MAX_24H_EXCHANGE_CAP", 0.150, 1, "24H Casual Cap (Legacy)", "Fallback single-window cap ceiling.", "Legacy parameter.", "5. Exchange Caps & Security"),
+        ("PROVISIONAL_CAP_MULTIPLIER", 2.5, 1, "Provisional Cap Relaxer", "Multiplier on 24H cap for PRs.", "Allows accelerated placement.", "5. Exchange Caps & Security"),
+        ("SESSION_EXCHANGE_CAP", 0.300, 1, "Verified Session Cap", "Cap for verified club events.", "Doubles point limits for mixers.", "5. Exchange Caps & Security"),
+        ("MIN_SESSION_PLAYERS", 6, 1, "Session Participant Floor", "Min players required to unlock session cap.", "Events with fewer revert to casual caps.", "5. Exchange Caps & Security"),
+        ("GRAPH_DAMPENING_MIN_OPPONENTS", 5.0, 1, "Graph Dampening Min Opponents", "Minimum distinct opponents required before W_G reaches 1.0.", "Increase in large clubs to curb clique farming.", "5. Exchange Caps & Security"),
+        ("GRAPH_CENTRALITY_TARGET", 0.200, 1, "Graph Centrality Target", "Eigenvector centrality baseline required before full rating gains.", "Lower for casual recreational venues; raise for league finals.", "5. Exchange Caps & Security"),
+        ("TOURNAMENT_MULTIPLIER_ACTIVE", 1, 1, "Tournament Multiplier Toggle", "Activates stakes multiplier for tournament.", "1 = Active.", "5. Exchange Caps & Security"),
+        ("TOURNAMENT_STAKES_MULTIPLIER", 1.15, 1, "Tournament Stakes Multiplier", "Rating delta multiplier for tournaments.", "Default 1.15 (+15%).", "5. Exchange Caps & Security"),
+        ("RD_MIN", 30.0, 1, "Certainty Floor", "Absolute uncertainty floor.", "Prevents RD dropping below 30.0.", "6. Uncertainty & Rust"),
+        ("RD_MAX", 350.0, 1, "Unrated Starting RD", "Uncertainty assigned at registration.", "Starting uncertainty.", "6. Uncertainty & Rust"),
+        ("RD_INFO_VARIANCE", 110.0, 1, "Contraction Speed", "Denominator in RD shrinkage. Higher values contract RD slower.", "Tuned to 110.0 for gradual, secure contraction.", "6. Uncertainty & Rust"),
+        ("INACTIVITY_CONSTANT", 12.0, 1, "Inactivity Rust Rate (Monthly)", "Monthly uncertainty growth for background cron cycles.", "Points of RD regained per month.", "6. Uncertainty & Rust"),
+        ("TEMPORAL_DRIFT_CONSTANT", 5.50, 1, "Inactivity Drift Constant (c)", "Daily uncertainty expansion constant.", "Default 5.50.", "6. Uncertainty & Rust"),
+        ("INACTIVITY_GRACE_DAYS", 7.0, 1, "Inactivity Grace Window (Days)", "Days before temporal rust begins accumulating.", "Default 7.0 days.", "6. Uncertainty & Rust"),
+        ("INACTIVITY_REPROVISION_THRESHOLD", 100.0, 1, "Inactivity Reprovisioning RD Ceiling", "RD threshold where inactive players are flagged for [PR].", "Default 100.0.", "6. Uncertainty & Rust"),
+        ("COHORT_FACTOR_0_PROV", 1.00, 1, "Omega 0 Factor", "Contraction against verified anchors.", "100% gain.", "6. Uncertainty & Rust"),
+        ("COHORT_FACTOR_1_PROV", 0.75, 1, "Omega 1 Factor", "Contraction with 1 unrated player.", "75% gain.", "6. Uncertainty & Rust"),
+        ("COHORT_FACTOR_2_PROV", 0.50, 1, "Omega 2 Factor", "Contraction with 2 unrated players.", "50% gain.", "6. Uncertainty & Rust"),
+        ("COHORT_FACTOR_3_PROV", 0.25, 1, "Omega 3 Factor", "Contraction with 3+ unrated players.", "25% sandbox.", "6. Uncertainty & Rust"),
+        # Dynamic Cohort Escalation (DCE) Parameters
+        ("ENABLE_DYNAMIC_COHORT_ESCALATION", 1.0, 1, "Dynamic Cohort Escalation Toggle", "1.0 enables progressive Omega scaling when unrated cohorts play together.", "Prevents sandbox lock in newly onboarded clubs.", "6. Uncertainty & Rust"),
+        ("DCE_TIER_1_MATCHES", 3.0, 1, "DCE Tier 1 Match Volume Gate", "Average cohort matches required to step Omega to Tier 1.", "Steps Omega from 0.25 to 0.50.", "6. Uncertainty & Rust"),
+        ("DCE_TIER_2_MATCHES", 7.0, 1, "DCE Tier 2 Match Volume Gate", "Average cohort matches required to step Omega to Tier 2.", "Steps Omega from 0.50 to 0.75.", "6. Uncertainty & Rust"),
+        ("DCE_TIER_1_OMEGA", 0.500, 1, "DCE Tier 1 Escalated Omega", "Uncertainty contraction multiplier unlocked at DCE Tier 1.", "Speeds unrated cohort calibration.", "6. Uncertainty & Rust"),
+        ("DCE_TIER_2_OMEGA", 0.750, 1, "DCE Tier 2 Escalated Omega", "Uncertainty contraction multiplier unlocked at DCE Tier 2.", "Enables near-full progression without verified anchors.", "6. Uncertainty & Rust"),
+        ("PROVISIONAL_RD_CONTRACTION_RATIO", 0.20, 1, "Provisional RD Shrink Modifier", "Slows RD drop for unrated players.", "Tuned to 0.20 to keep players provisional across adequate sample.", "7. Accuracy & Tri-Gates"),
+        ("PROVISIONAL_ACCURACY_DAMPENER", 0.40, 1, "Provisional Accuracy Gain Cap", "Restricts accuracy gain during placement.", "Caps visual accuracy.", "7. Accuracy & Tri-Gates"),
+        ("ACCURACY_HIGH_TRUST_FLOOR", 65.0, 1, "Accuracy High-Trust Threshold", "Inflection boundary where rapid linear ramp transitions to asymptotic ascent.", "Ratings above 65% are considered established.", "7. Accuracy & Tri-Gates"),
+        ("ACCURACY_TARGET_MATCHES_ELITE", 100.0, 1, "100% Accuracy Matches Quota", "Match volume required to reach near-100% accuracy.", "Demands deep match volume.", "7. Accuracy & Tri-Gates"),
+        ("ACCURACY_TARGET_OPPONENTS_ELITE", 50.0, 1, "100% Accuracy Opponents Quota", "Unique opponents required to reach near-100% accuracy.", "Prevents club clique inflation.", "7. Accuracy & Tri-Gates"),
+        ("ACCURACY_TARGET_CITY_BRIDGES", 25.0, 1, "100% Accuracy City Bridges Quota", "Away municipal matches required for complete global calibration.", "Ensures regional diffusion.", "7. Accuracy & Tri-Gates"),
+        ("ACCURACY_TARGET_COUNTRY_BRIDGES", 10.0, 1, "100% Accuracy Country Bridges Quota", "Cross-border matches required for international anchor accuracy.", "Guarantees international anchor parity.", "7. Accuracy & Tri-Gates"),
+        ("ACCURACY_CURVATURE_GAMMA", 1.40, 1, "Asymptotic Curvature Gamma", "Power exponent governing the steepness of high-trust accuracy ascent.", "Higher values make 95%+ exponentially harder to achieve.", "7. Accuracy & Tri-Gates"),
+        ("ACCURACY_WEIGHT_RD", 0.50, 1, "Accuracy Weight: RD", "Weight for Pillar 1 (Certainty).", "Controls influence of RD.", "7. Accuracy & Tri-Gates"),
+        ("ACCURACY_WEIGHT_MATCHES", 0.25, 1, "Accuracy Weight: Matches", "Weight for Pillar 2 (Match Depth).", "Controls importance of volume.", "7. Accuracy & Tri-Gates"),
+        ("ACCURACY_WEIGHT_DIVERSITY", 0.25, 1, "Accuracy Weight: Diversity", "Weight for Pillar 3 (Network).", "Controls importance of unique opponents.", "7. Accuracy & Tri-Gates"),
+        ("TIER_PROVISIONAL_MAX", 69.99, 1, "Provisional Score Ceiling", "Upper score bound for Tier 1.", "Players below remain [PR].", "7. Accuracy & Tri-Gates"),
+        ("TARGET_MATCHES_PROVISIONAL", 3, 1, "Target Matches: Provisional", "Match quota during onboarding.", "Satisfies depth.", "7. Accuracy & Tri-Gates"),
+        ("TARGET_OPPONENTS_PROVISIONAL", 2, 1, "Target Opponents: Provisional", "Opponent quota during onboarding.", "Satisfies diversity.", "7. Accuracy & Tri-Gates"),
+        ("PROVISIONAL_RD_GATE", 100.0, 1, "Tri-Gate Max RD", "RD must be <= 100 to exit [PR].", "Uncertainty ceiling to graduate.", "7. Accuracy & Tri-Gates"),
+        ("PROVISIONAL_MIN_MATCHES", 10, 1, "Tri-Gate Min Matches", "Verified matches to exit [PR].", "Volume required to shed badge.", "7. Accuracy & Tri-Gates"),
+        ("PROVISIONAL_MIN_OPPONENTS", 8, 1, "Tri-Gate Min Opponents", "Unique opponents to exit [PR].", "Distinct opponents required.", "7. Accuracy & Tri-Gates"),
+        ("ISLAND_ACCURACY_CAP", 80.0, 1, "Island Geographic Cap", "Max accuracy if City has 0 bridges.", "Caps accuracy.", "7. Accuracy & Tri-Gates"),
+        ("BRIDGE_RD_THRESHOLD", 80.0, 1, "Bridge Max RD", "Max RD to qualify as Bridge.", "Count if RD <= 80.", "8. Hawking Macro"),
+        ("BRIDGE_MIN_MATCHES", 5, 1, "Bridge Min Matches", "Away matches required to link cities.", "Matches required before linking.", "8. Hawking Macro"),
+        ("CIRCUIT_BREAKER", 0.0250, 1, "Auto Cron Safety Ceiling", "Max shift per weekly cycle.", "Limits automated macro shifts.", "8. Hawking Macro"),
+        ("GLOBAL_MEDIAN_TARGET", 3.0000, 1, "Global Median Target", "Anchor standard for national calibration.", "Target median rating for active verified player pool.", "8. Hawking Macro"),
+        ("HAWKING_MIN_ACTIVE_VERIFIED_PLAYERS", 60.0, 1, "Min Active Verified Core", "Required verified residents for readiness.", "Blocks ghost town registration inflation.", "8. Hawking Macro"),
+        ("HAWKING_TARGET_MATCH_DEPTH", 15.0, 1, "Target Municipal Activity Depth", "Average match depth per active resident before city reaches green status.", "Ensures deep local match volume.", "8. Hawking Macro"),
+        ("HAWKING_TARGET_BRIDGE_NODES", 5.0, 1, "Target Bridge Nodes (K)", "Qualified traveler nodes required for full connectivity.", "Ensures inter-city calibration.", "8. Hawking Macro"),
+        ("HAWKING_TIKHONOV_LAMBDA", 3.0, 1, "Tikhonov Shrinkage Lambda", "Dampening constant in bridge confidence: K / (K + lambda).", "Lower values trust bridge evidence faster.", "8. Hawking Macro"),
+        ("HAWKING_WEIGHT_ACTIVE_PLAYERS", 40.0, 1, "Readiness Weight: Active Core", "Pillar 1 max score for active verified player liquidity.", "Default 40.0 pts.", "8. Hawking Macro"),
+        ("HAWKING_WEIGHT_MATCH_DEPTH", 30.0, 1, "Readiness Weight: Match Depth", "Pillar 2 max score for local match depth ratio.", "Default 30.0 pts.", "8. Hawking Macro"),
+        ("HAWKING_WEIGHT_BRIDGES", 30.0, 1, "Readiness Weight: Traveler Bridges", "Pillar 3 max score for cross-city bridge connectivity.", "Default 30.0 pts.", "8. Hawking Macro"),
+        ("HAWKING_READINESS_GREEN_GATE", 80.0, 1, "Readiness Green Gate %", "Readiness score percentage required to unlock Green deployment status.", "Default 80.0%.", "8. Hawking Macro"),
+        ("HAWKING_READINESS_YELLOW_GATE", 50.0, 1, "Readiness Yellow Gate %", "Readiness score percentage for Yellow maturing status.", "Default 50.0%.", "8. Hawking Macro"),
+        ("MC_STD_B03", 1.000, 1, "Format Multiplier: Best of 3 Sets", "Confidence multiplier for Best of 3 Sets.", "Full standard match.", "9. Format Multipliers (M_C)"),
+        ("MC_STD_B05", 1.000, 1, "Format Multiplier: Best of 5 Sets", "Confidence multiplier for Best of 5 Sets.", "Full standard match.", "9. Format Multipliers (M_C)"),
+        ("MC_RACE_4", 0.500, 1, "Format Multiplier: Race to 4 Games", "Confidence multiplier for Race to 4 Games.", "Short sprint set.", "9. Format Multipliers (M_C)"),
+        ("MC_RACE_5", 0.600, 1, "Format Multiplier: Race to 5 Games", "Confidence multiplier for Race to 5 Games.", "Sprint set.", "9. Format Multipliers (M_C)"),
+        ("MC_RACE_6", 0.700, 1, "Format Multiplier: Race to 6 Games", "Confidence multiplier for Race to 6 Games.", "Standard single set.", "9. Format Multipliers (M_C)"),
+        ("MC_RACE_7", 0.800, 1, "Format Multiplier: Race to 7 Games", "Confidence multiplier for Race to 7 Games.", "Extended single set.", "9. Format Multipliers (M_C)"),
+        ("MC_RACE_9", 0.800, 1, "Format Multiplier: Race to 9 Games", "Confidence multiplier for Race to 9 Games.", "Pro set.", "9. Format Multipliers (M_C)"),
+        ("MC_RACE_11", 0.900, 1, "Format Multiplier: Race to 11 Games", "Confidence multiplier for Race to 11 Games.", "Extended pro set.", "9. Format Multipliers (M_C)"),
+        ("MC_AMER_12", 0.300, 1, "Format Multiplier: Americano 12", "Confidence multiplier for Americano 12.", "Social mixer weight.", "9. Format Multipliers (M_C)"),
+        ("MC_MEX_12", 0.300, 1, "Format Multiplier: Mexicano 12", "Confidence multiplier for Mexicano 12.", "Social mixer weight.", "9. Format Multipliers (M_C)"),
+        ("MC_AMER_16", 0.300, 1, "Format Multiplier: Americano 16", "Confidence multiplier for Americano 16.", "Social mixer weight.", "9. Format Multipliers (M_C)"),
+        ("MC_MEX_16", 0.300, 1, "Format Multiplier: Mexicano 16", "Confidence multiplier for Mexicano 16.", "Social mixer weight.", "9. Format Multipliers (M_C)"),
+        ("MC_AMER_20", 0.300, 1, "Format Multiplier: Americano 20", "Confidence multiplier for Americano 20.", "Social mixer weight.", "9. Format Multipliers (M_C)"),
+        ("MC_MEX_20", 0.300, 1, "Format Multiplier: Mexicano 20", "Confidence multiplier for Mexicano 20.", "Social mixer weight.", "9. Format Multipliers (M_C)"),
+        ("MC_AMER_24", 0.300, 1, "Format Multiplier: Americano 24", "Confidence multiplier for Americano 24.", "Social mixer weight.", "9. Format Multipliers (M_C)"),
+        ("MC_MEX_24", 0.300, 1, "Format Multiplier: Mexicano 24", "Confidence multiplier for Mexicano 24.", "Social mixer weight.", "9. Format Multipliers (M_C)"),
+        ("MC_AMER_28", 0.300, 1, "Format Multiplier: Americano 28", "Confidence multiplier for Americano 28.", "Social mixer weight.", "9. Format Multipliers (M_C)"),
+        ("MC_MEX_28", 0.300, 1, "Format Multiplier: Mexicano 28", "Confidence multiplier for Mexicano 28.", "Social mixer weight.", "9. Format Multipliers (M_C)"),
+        ("MC_AMER_32", 0.350, 1, "Format Multiplier: Americano 32", "Confidence multiplier for Americano 32.", "Social mixer weight.", "9. Format Multipliers (M_C)"),
+        ("MC_MEX_32", 0.350, 1, "Format Multiplier: Mexicano 32", "Confidence multiplier for Mexicano 32.", "Social mixer weight.", "9. Format Multipliers (M_C)"),
+    ]
+    for k, v, act, tit, desc, tune, grp in master_params:
+        cursor.execute(
+            """INSERT INTO global_config VALUES (?, ?, ?, ?, ?, ?, ?) 
+               ON CONFLICT(param_key) DO UPDATE SET 
+                   title=excluded.title, description=excluded.description, 
+                   tuning_guide=excluded.tuning_guide, module_group=excluded.module_group""",
+            (k, v, act, tit, desc, tune, grp),
+        )
 
 
 init_db()
@@ -1335,24 +435,22 @@ init_db()
 # TRAILING 60-DAY ROLLING MEDIAN & METRIC DERIVATION HELPERS
 # ==============================================================================
 def calculate_true_median(values: list[float]):
-  if not values:
-    return None
-  sorted_vals = sorted(values)
-  n = len(sorted_vals)
-  mid = n // 2
-  if n % 2 == 1:
-    return float(sorted_vals[mid])
-  else:
-    return float((sorted_vals[mid - 1] + sorted_vals[mid]) / 2.0)
+    if not values:
+        return None
+    sorted_vals = sorted(values)
+    n = len(sorted_vals)
+    mid = n // 2
+    if n % 2 == 1:
+        return float(sorted_vals[mid])
+    else:
+        return float((sorted_vals[mid - 1] + sorted_vals[mid]) / 2.0)
 
 
-def compute_60d_venue_metrics(
-    venue_id: str, conn, cutoff_ts: str = None
-) -> dict:
-  if cutoff_ts is None:
-    cutoff_ts = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+def compute_60d_venue_metrics(venue_id: str, conn, cutoff_ts: str = None) -> dict:
+    if cutoff_ts is None:
+        cutoff_ts = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
 
-  q = """
+    q = """
         SELECT DISTINCT p.player_id, p.latent_mmr 
         FROM matches m
         JOIN players p ON p.player_id IN (m.team_a_p1_id, m.team_a_p2_id, m.team_b_p1_id, m.team_b_p2_id)
@@ -1362,20 +460,18 @@ def compute_60d_venue_metrics(
           AND p.is_quarantined = 0
           AND p.calibration_tier != 'INACTIVE'
     """
-  rows = conn.execute(q, (venue_id, cutoff_ts)).fetchall()
-  ratings = [
-      float(r["latent_mmr"]) for r in rows if r["latent_mmr"] is not None
-  ]
-  count = len(ratings)
-  med = calculate_true_median(ratings)
-  return {"median": med, "liquidity": count, "ratings": ratings}
+    rows = conn.execute(q, (venue_id, cutoff_ts)).fetchall()
+    ratings = [float(r["latent_mmr"]) for r in rows if r["latent_mmr"] is not None]
+    count = len(ratings)
+    med = calculate_true_median(ratings)
+    return {"median": med, "liquidity": count, "ratings": ratings}
 
 
 def compute_60d_city_metrics(city_id: str, conn, cutoff_ts: str = None) -> dict:
-  if cutoff_ts is None:
-    cutoff_ts = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+    if cutoff_ts is None:
+        cutoff_ts = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
 
-  q = """
+    q = """
         SELECT DISTINCT p.player_id, p.latent_mmr 
         FROM players p
         WHERE p.rating_deviation <= 100.0
@@ -1405,45 +501,30 @@ def compute_60d_city_metrics(city_id: str, conn, cutoff_ts: str = None) -> dict:
             )
           )
     """
-  params = [
-      city_id,
-      cutoff_ts,
-      city_id,
-      cutoff_ts,
-      city_id,
-      cutoff_ts,
-      city_id,
-      cutoff_ts,
-      city_id,
-      cutoff_ts,
-      cutoff_ts,
-      cutoff_ts,
-      cutoff_ts,
-  ]
-  rows = conn.execute(q, params).fetchall()
-  ratings = [
-      float(r["latent_mmr"]) for r in rows if r["latent_mmr"] is not None
-  ]
-  count = len(ratings)
-  med = calculate_true_median(ratings)
-  p75 = float(np.percentile(ratings, 75)) if ratings else None
-  delta_anchor = round(med - 3.0000, 4) if med is not None else None
-  return {
-      "median": med,
-      "p75": p75,
-      "liquidity": count,
-      "delta_anchor": delta_anchor,
-      "ratings": ratings,
-  }
+    params = [
+        city_id, cutoff_ts, city_id, cutoff_ts, city_id, cutoff_ts, city_id, cutoff_ts,
+        city_id, cutoff_ts, cutoff_ts, cutoff_ts, cutoff_ts
+    ]
+    rows = conn.execute(q, params).fetchall()
+    ratings = [float(r["latent_mmr"]) for r in rows if r["latent_mmr"] is not None]
+    count = len(ratings)
+    med = calculate_true_median(ratings)
+    p75 = float(np.percentile(ratings, 75)) if ratings else None
+    delta_anchor = round(med - 3.0000, 4) if med is not None else None
+    return {
+        "median": med,
+        "p75": p75,
+        "liquidity": count,
+        "delta_anchor": delta_anchor,
+        "ratings": ratings,
+    }
 
 
-def compute_60d_country_metrics(
-    country_code: str, conn, cutoff_ts: str = None
-) -> dict:
-  if cutoff_ts is None:
-    cutoff_ts = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+def compute_60d_country_metrics(country_code: str, conn, cutoff_ts: str = None) -> dict:
+    if cutoff_ts is None:
+        cutoff_ts = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
 
-  q = """
+    q = """
         SELECT DISTINCT p.player_id, p.latent_mmr 
         FROM players p
         WHERE p.rating_deviation <= 100.0
@@ -1473,65 +554,52 @@ def compute_60d_country_metrics(
             )
           )
     """
-  params = [
-      country_code,
-      cutoff_ts,
-      country_code,
-      cutoff_ts,
-      country_code,
-      cutoff_ts,
-      country_code,
-      cutoff_ts,
-      country_code,
-      cutoff_ts,
-      cutoff_ts,
-      cutoff_ts,
-      cutoff_ts,
-  ]
-  rows = conn.execute(q, params).fetchall()
-  ratings = [
-      float(r["latent_mmr"]) for r in rows if r["latent_mmr"] is not None
-  ]
-  count = len(ratings)
-  med = calculate_true_median(ratings)
-  delta_anchor = round(med - 3.0000, 4) if med is not None else None
+    params = [
+        country_code, cutoff_ts, country_code, cutoff_ts, country_code, cutoff_ts, country_code, cutoff_ts,
+        country_code, cutoff_ts, cutoff_ts, cutoff_ts, cutoff_ts
+    ]
+    rows = conn.execute(q, params).fetchall()
+    ratings = [float(r["latent_mmr"]) for r in rows if r["latent_mmr"] is not None]
+    count = len(ratings)
+    med = calculate_true_median(ratings)
+    delta_anchor = round(med - 3.0000, 4) if med is not None else None
 
-  if med is None:
-    drift_status = "COLD START"
-    badge_color = "#94a3b8"
-  else:
-    abs_drift = abs(delta_anchor)
-    if abs_drift <= 0.0500:
-      drift_status = "BALANCED"
-      badge_color = "#22c55e"
-    elif abs_drift <= 0.1000:
-      drift_status = "MILD DRIFT"
-      badge_color = "#eab308"
+    if med is None:
+        drift_status = "COLD START"
+        badge_color = "#94a3b8"
     else:
-      drift_status = "CIRCUIT WARNING"
-      badge_color = "#ef4444"
+        abs_drift = abs(delta_anchor)
+        if abs_drift <= 0.0500:
+            drift_status = "BALANCED"
+            badge_color = "#22c55e"
+        elif abs_drift <= 0.1000:
+            drift_status = "MILD DRIFT"
+            badge_color = "#eab308"
+        else:
+            drift_status = "CIRCUIT WARNING"
+            badge_color = "#ef4444"
 
-  return {
-      "median": med,
-      "liquidity": count,
-      "delta_anchor": delta_anchor,
-      "drift_status": drift_status,
-      "badge_color": badge_color,
-      "ratings": ratings,
-  }
+    return {
+        "median": med,
+        "liquidity": count,
+        "delta_anchor": delta_anchor,
+        "drift_status": drift_status,
+        "badge_color": badge_color,
+        "ratings": ratings,
+    }
 
 
 # ==============================================================================
 # HAWKING MATHEMATICAL & STATISTICAL HELPERS (BITS 20 & 22)
 # ==============================================================================
 def compute_decay_multiplier(rating: float) -> float:
-  if rating >= 7.0000:
-    return 0.0000001
-  base_decay = (7.0000 - rating) / 7.0000
-  if rating >= 6.3000:
-    drag = ((7.0000 - rating) / (7.0000 - 6.3000)) ** 2.5
-    return max(0.0000001, base_decay * drag)
-  return max(0.0010000, base_decay)
+    if rating >= 7.0000:
+        return 0.0000001
+    base_decay = (7.0000 - rating) / 7.0000
+    if rating >= 6.3000:
+        drag = ((7.0000 - rating) / (7.0000 - 6.3000)) ** 2.5
+        return max(0.0000001, base_decay * drag)
+    return max(0.0010000, base_decay)
 
 
 def evaluate_municipal_readiness(
@@ -1540,490 +608,450 @@ def evaluate_municipal_readiness(
     k_bridges: int,
     cfg: dict = None,
 ) -> dict:
-  if cfg is None:
-    cfg = {}
-  target_active = float(cfg.get("HAWKING_MIN_ACTIVE_VERIFIED_PLAYERS", 60.0))
-  target_depth = float(cfg.get("HAWKING_TARGET_MATCH_DEPTH", 15.0))
-  lambda_bridge = float(cfg.get("HAWKING_TIKHONOV_LAMBDA", 3.0))
+    if cfg is None:
+        cfg = {}
+    target_active = float(cfg.get("HAWKING_MIN_ACTIVE_VERIFIED_PLAYERS", 60.0))
+    target_depth = float(cfg.get("HAWKING_TARGET_MATCH_DEPTH", 15.0))
+    lambda_bridge = float(cfg.get("HAWKING_TIKHONOV_LAMBDA", 3.0))
 
-  w_act = float(cfg.get("HAWKING_WEIGHT_ACTIVE_PLAYERS", 40.0))
-  w_depth = float(cfg.get("HAWKING_WEIGHT_MATCH_DEPTH", 30.0))
-  w_bridge = float(cfg.get("HAWKING_WEIGHT_BRIDGES", 30.0))
-  gate_green = float(cfg.get("HAWKING_READINESS_GREEN_GATE", 80.0))
-  gate_yellow = float(cfg.get("HAWKING_READINESS_YELLOW_GATE", 50.0))
+    w_act = float(cfg.get("HAWKING_WEIGHT_ACTIVE_PLAYERS", 40.0))
+    w_depth = float(cfg.get("HAWKING_WEIGHT_MATCH_DEPTH", 30.0))
+    w_bridge = float(cfg.get("HAWKING_WEIGHT_BRIDGES", 30.0))
+    gate_green = float(cfg.get("HAWKING_READINESS_GREEN_GATE", 80.0))
+    gate_yellow = float(cfg.get("HAWKING_READINESS_YELLOW_GATE", 50.0))
 
-  p_score = (
-      min(w_act, (active_verified_count / target_active) * w_act)
-      if target_active > 0
-      else w_act
-  )
-  depth = (
-      (total_matches / active_verified_count)
-      if active_verified_count > 0
-      else 0.0
-  )
-  d_score = (
-      min(w_depth, (depth / target_depth) * w_depth) if target_depth > 0 else w_depth
-  )
-  w_conf = (
-      (k_bridges / (k_bridges + lambda_bridge))
-      if (k_bridges + lambda_bridge) > 0
-      else 0.0
-  )
-  b_score = w_conf * w_bridge
+    p_score = (
+        min(w_act, (active_verified_count / target_active) * w_act)
+        if target_active > 0
+        else w_act
+    )
+    depth = (
+        (total_matches / active_verified_count)
+        if active_verified_count > 0
+        else 0.0
+    )
+    d_score = (
+        min(w_depth, (depth / target_depth) * w_depth) if target_depth > 0 else w_depth
+    )
+    w_conf = (
+        (k_bridges / (k_bridges + lambda_bridge))
+        if (k_bridges + lambda_bridge) > 0
+        else 0.0
+    )
+    b_score = w_conf * w_bridge
 
-  total_readiness = round(p_score + d_score + b_score, 1)
-  if total_readiness >= gate_green:
-    status = "GREEN (Calibrated)"
-  elif total_readiness >= gate_yellow:
-    status = "YELLOW (Maturing Pool)"
-  else:
-    status = "RED (Isolated Island)"
+    total_readiness = round(p_score + d_score + b_score, 1)
+    if total_readiness >= gate_green:
+        status = "GREEN (Calibrated)"
+    elif total_readiness >= gate_yellow:
+        status = "YELLOW (Maturing Pool)"
+    else:
+        status = "RED (Isolated Island)"
 
-  return {
-      "readiness_pct": total_readiness,
-      "status": status,
-      "w_conf": round(w_conf, 4),
-      "active_verified": active_verified_count,
-      "activity_depth": round(depth, 1),
-      "p_score": round(p_score, 1),
-      "d_score": round(d_score, 1),
-      "b_score": round(b_score, 1),
-  }
+    return {
+        "readiness_pct": total_readiness,
+        "status": status,
+        "w_conf": round(w_conf, 4),
+        "active_verified": active_verified_count,
+        "activity_depth": round(depth, 1),
+        "p_score": round(p_score, 1),
+        "d_score": round(d_score, 1),
+        "b_score": round(b_score, 1),
+    }
 
 
 def calculate_intransitivity(city_id: str, conn) -> float:
-  query = """
+    query = """
         SELECT win_expectancy_a, score_team_a, score_team_b 
         FROM matches m
         JOIN venues v ON m.venue_id = v.venue_id
         WHERE v.city_id = ?
     """
-  rows = conn.execute(query, (city_id,)).fetchall()
-  if not rows:
-    return 0.0000
-  qualifying, upsets = 0, 0
-  for r in rows:
-    ea = float(r["win_expectancy_a"] or 0.5)
-    sa = int(r["score_team_a"] or 0)
-    sb = int(r["score_team_b"] or 0)
-    if ea >= 0.70:
-      qualifying += 1
-      if sa < sb:
-        upsets += 1
-    elif ea <= 0.30:
-      qualifying += 1
-      if sa > sb:
-        upsets += 1
-  return round(upsets / qualifying, 4) if qualifying > 0 else 0.0000
+    rows = conn.execute(query, (city_id,)).fetchall()
+    if not rows:
+        return 0.0000
+    qualifying, upsets = 0, 0
+    for r in rows:
+        ea = float(r["win_expectancy_a"] or 0.5)
+        sa = int(r["score_team_a"] or 0)
+        sb = int(r["score_team_b"] or 0)
+        if ea >= 0.70:
+            qualifying += 1
+            if sa < sb:
+                upsets += 1
+        elif ea <= 0.30:
+            qualifying += 1
+            if sa > sb:
+                upsets += 1
+    return round(upsets / qualifying, 4) if qualifying > 0 else 0.0000
 
 
 def calculate_hawking_player_delta(
     r_curr: float, rd_curr: float, target_offset: float
 ) -> float:
-  if rd_curr > 100.0:
-    return 0.0000
-  if r_curr <= 4.5000:
-    scale = max(0.0, r_curr / 4.5000)
-    return round(target_offset * scale, 4)
-  decay_45 = compute_decay_multiplier(4.5000)
-  decay_curr = compute_decay_multiplier(r_curr)
-  elasticity = decay_curr / decay_45 if decay_45 > 0 else 1.0
-  return round(target_offset * elasticity, 4)
+    if rd_curr > 100.0:
+        return 0.0000
+    if r_curr <= 4.5000:
+        scale = max(0.0, r_curr / 4.5000)
+        return round(target_offset * scale, 4)
+    decay_45 = compute_decay_multiplier(4.5000)
+    decay_curr = compute_decay_multiplier(r_curr)
+    elasticity = decay_curr / decay_45 if decay_45 > 0 else 1.0
+    return round(target_offset * elasticity, 4)
 
 
 def validate_format_score(fmt_id, sets_data, gw, gl, sa, sb, fmt_dict):
-  fmt_obj = fmt_dict.get(fmt_id)
-  if not fmt_obj:
-    return False, "Unknown format identifier."
+    fmt_obj = fmt_dict.get(fmt_id)
+    if not fmt_obj:
+        return False, "Unknown format identifier."
 
-  cat = fmt_obj["category"]
-  if cat == "RACE_GAMES":
-    target_g = fmt_obj.get("target_games") or 6
-    w_games = max(gw, gl)
-    l_games = min(gw, gl)
+    cat = fmt_obj["category"]
+    if cat == "RACE_GAMES":
+        target_g = fmt_obj.get("target_games") or 6
+        w_games = max(gw, gl)
+        l_games = min(gw, gl)
 
-    if w_games < target_g:
-      return False, f"Winning score must reach at least {target_g} games."
-    if w_games == target_g:
-      if l_games > target_g - 2 and not (target_g == 4 and l_games == 2):
-        return (
-            False,
-            f"Invalid score ({w_games}-{l_games}). At {target_g} games,"
-            f" opponent can have at most {target_g-2} games.",
-        )
-    elif w_games == target_g + 1:
-      if l_games not in (target_g - 1, target_g):
-        return (
-            False,
-            f"Invalid score ({w_games}-{l_games}). If winning with"
-            f" {target_g+1} games, finish must be {target_g+1}-{target_g-1} or"
-            f" {target_g+1}-{target_g}.",
-        )
-    else:
-      return (
-          False,
-          f"Invalid score ({w_games}-{l_games}). Games exceed allowable"
-          f" finish for {fmt_obj['format_name']}.",
-      )
+        if w_games < target_g:
+            return False, f"Winning score must reach at least {target_g} games."
+        if w_games == target_g:
+            if l_games > target_g - 2 and not (target_g == 4 and l_games == 2):
+                return False, f"Invalid score ({w_games}-{l_games}). At {target_g} games, opponent can have at most {target_g-2} games."
+        elif w_games == target_g + 1:
+            if l_games not in (target_g - 1, target_g):
+                return False, f"Invalid score ({w_games}-{l_games}). If winning with {target_g+1} games, finish must be {target_g+1}-{target_g-1} or {target_g+1}-{target_g}."
+        else:
+            return False, f"Invalid score ({w_games}-{l_games}). Games exceed allowable finish for {fmt_obj['format_name']}."
 
-  elif cat == "MULTI_SET":
-    for s_idx, (s_w, s_l) in enumerate(sets_data):
-      w_s = max(s_w, s_l)
-      l_s = min(s_w, s_l)
-      if w_s == 6 and l_s > 4:
-        return (
-            False,
-            f"Set #{s_idx+1} ({s_w}-{s_l}) invalid: 6 games can only be won if"
-            " opponent has ≤ 4.",
-        )
-      elif w_s == 7 and l_s not in (5, 6):
-        return (
-            False,
-            f"Set #{s_idx+1} ({s_w}-{s_l}) invalid: 7 games must finish 7-5 or"
-            " 7-6.",
-        )
-      elif w_s not in (6, 7):
-        return (
-            False,
-            f"Set #{s_idx+1} ({s_w}-{s_l}) invalid: Set winner must have 6 or"
-            " 7 games.",
-        )
+    elif cat == "MULTI_SET":
+        for s_idx, (s_w, s_l) in enumerate(sets_data):
+            w_s = max(s_w, s_l)
+            l_s = min(s_w, s_l)
+            if w_s == 6 and l_s > 4:
+                return False, f"Set #{s_idx+1} ({s_w}-{s_l}) invalid: 6 games can only be won if opponent has ≤ 4."
+            elif w_s == 7 and l_s not in (5, 6):
+                return False, f"Set #{s_idx+1} ({s_w}-{s_l}) invalid: 7 games must finish 7-5 or 7-6."
+            elif w_s not in (6, 7):
+                return False, f"Set #{s_idx+1} ({s_w}-{s_l}) invalid: Set winner must have 6 or 7 games."
 
-  elif cat in ("AMERICANO", "MEXICANO"):
-    tot_p = fmt_obj.get("total_points") or 24
-    if sa + sb != tot_p:
-      return (
-          False,
-          f"Points must sum exactly to {tot_p} for {fmt_obj['format_name']}."
-          f" Currently sums to {sa+sb}.",
-      )
+    elif cat in ("AMERICANO", "MEXICANO"):
+        tot_p = fmt_obj.get("total_points") or 24
+        if sa + sb != tot_p:
+            return False, f"Points must sum exactly to {tot_p} for {fmt_obj['format_name']}. Currently sums to {sa+sb}."
 
-  return True, "Valid score."
+    return True, "Valid score."
 
 
 # ==============================================================================
-# 2. V.16 CALCULATION ENGINE
+# 2. V.16 CALCULATION ENGINE (WITH DYNAMIC COHORT ESCALATION)
 # ==============================================================================
 class RyftV16:
 
-  @staticmethod
-  def get_configs(conn=None):
-    owns = False
-    if not conn:
-      conn = get_db_connection()
-      owns = True
-    rows = conn.execute(
-        "SELECT param_key, param_value FROM global_config WHERE is_active = 1"
-    ).fetchall()
-    if owns:
-      conn.close()
-    return {r["param_key"]: r["param_value"] for r in rows}
+    @staticmethod
+    def get_configs(conn=None):
+        owns = False
+        if not conn:
+            conn = get_db_connection()
+            owns = True
+        rows = conn.execute(
+            "SELECT param_key, param_value FROM global_config WHERE is_active = 1"
+        ).fetchall()
+        if owns:
+            conn.close()
+        return {r["param_key"]: r["param_value"] for r in rows}
 
-  @staticmethod
-  def get_cat_for_rating(r_val, gender="MALE", conn=None):
-    owns = False
-    if not conn:
-      conn = get_db_connection()
-      owns = True
+    @staticmethod
+    def get_cat_for_rating(r_val, gender="MALE", conn=None):
+        owns = False
+        if not conn:
+            conn = get_db_connection()
+            owns = True
 
-    g_filter = "FEMALE" if str(gender).upper() == "FEMALE" else "MALE"
-    cats = conn.execute(
-        """SELECT category_name, min_rating, max_rating, speed_multiplier, sort_order 
-           FROM rating_categories 
-           WHERE gender = ? ORDER BY sort_order ASC""",
-        (g_filter,),
-    ).fetchall()
+        g_filter = "FEMALE" if str(gender).upper() == "FEMALE" else "MALE"
+        cats = conn.execute(
+            """SELECT category_name, min_rating, max_rating, speed_multiplier, sort_order 
+               FROM rating_categories 
+               WHERE gender = ? ORDER BY sort_order ASC""",
+            (g_filter,),
+        ).fetchall()
 
-    if not cats:
-      cats = conn.execute(
-          """SELECT category_name, min_rating, max_rating, speed_multiplier, sort_order 
-             FROM rating_categories ORDER BY sort_order ASC"""
-      ).fetchall()
+        if not cats:
+            cats = conn.execute(
+                """SELECT category_name, min_rating, max_rating, speed_multiplier, sort_order 
+                   FROM rating_categories ORDER BY sort_order ASC"""
+            ).fetchall()
 
-    if owns:
-      conn.close()
+        if owns:
+            conn.close()
 
-    if not cats:
-      return "Intermediate", 2.000, 3.499, 1.00
+        if not cats:
+            return "Intermediate", 2.000, 3.499, 1.00
 
-    for i, c in enumerate(cats):
-      c_min = float(c["min_rating"])
-      c_max = float(c["max_rating"])
-      if i == len(cats) - 1:
-        if r_val >= c_min:
-          return (
-              c["category_name"],
-              c_min,
-              c_max,
-              float(c["speed_multiplier"] or 1.00),
-          )
-      else:
-        next_min = float(cats[i + 1]["min_rating"])
-        if c_min <= r_val < next_min:
-          return (
-              c["category_name"],
-              c_min,
-              c_max,
-              float(c["speed_multiplier"] or 1.00),
-          )
+        for i, c in enumerate(cats):
+            c_min = float(c["min_rating"])
+            c_max = float(c["max_rating"])
+            if i == len(cats) - 1:
+                if r_val >= c_min:
+                    return (
+                        c["category_name"],
+                        c_min,
+                        c_max,
+                        float(c["speed_multiplier"] or 1.00),
+                    )
+            else:
+                next_min = float(cats[i + 1]["min_rating"])
+                if c_min <= r_val < next_min:
+                    return (
+                        c["category_name"],
+                        c_min,
+                        c_max,
+                        float(c["speed_multiplier"] or 1.00),
+                    )
 
-    if r_val <= float(cats[0]["min_rating"]):
-      return (
-          cats[0]["category_name"],
-          float(cats[0]["min_rating"]),
-          float(cats[0]["max_rating"]),
-          float(cats[0]["speed_multiplier"] or 1.00),
-      )
-    return (
-        cats[-1]["category_name"],
-        float(cats[-1]["min_rating"]),
-        float(cats[-1]["max_rating"]),
-        float(cats[-1]["speed_multiplier"] or 1.00),
-    )
+        if r_val <= float(cats[0]["min_rating"]):
+            return (
+                cats[0]["category_name"],
+                float(cats[0]["min_rating"]),
+                float(cats[0]["max_rating"]),
+                float(cats[0]["speed_multiplier"] or 1.00),
+            )
+        return (
+            cats[-1]["category_name"],
+            float(cats[-1]["min_rating"]),
+            float(cats[-1]["max_rating"]),
+            float(cats[-1]["speed_multiplier"] or 1.00),
+        )
 
-  @staticmethod
-  def calc_accuracy(
-      rd,
-      m_count,
-      opp_count,
-      is_prov,
-      k_city_bridges,
-      k_country_bridges,
-      cfg,
-  ):
-    s_rd = max(
-        0.0,
-        min(
-            1.0,
-            (cfg.get("RD_MAX", 350.0) - rd)
-            / (cfg.get("RD_MAX", 350.0) - cfg.get("RD_MIN", 30.0)),
-        ),
-    )
-    t_m = cfg.get("TARGET_MATCHES_PROVISIONAL", 3)
-    t_o = cfg.get("TARGET_OPPONENTS_PROVISIONAL", 2)
-    s_m = min(1.0, m_count / float(t_m))
-    s_d = min(1.0, opp_count / float(t_o))
+    @staticmethod
+    def calc_accuracy(
+        rd,
+        m_count,
+        opp_count,
+        is_prov,
+        k_city_bridges,
+        k_country_bridges,
+        cfg,
+    ):
+        s_rd = max(
+            0.0,
+            min(
+                1.0,
+                (cfg.get("RD_MAX", 350.0) - rd)
+                / (cfg.get("RD_MAX", 350.0) - cfg.get("RD_MIN", 30.0)),
+            ),
+        )
+        t_m = cfg.get("TARGET_MATCHES_PROVISIONAL", 3)
+        t_o = cfg.get("TARGET_OPPONENTS_PROVISIONAL", 2)
+        s_m = min(1.0, m_count / float(t_m))
+        s_d = min(1.0, opp_count / float(t_o))
 
-    stage1_base = (
-        cfg.get("ACCURACY_WEIGHT_RD", 0.50) * s_rd
-        + cfg.get("ACCURACY_WEIGHT_MATCHES", 0.25) * s_m
-        + cfg.get("ACCURACY_WEIGHT_DIVERSITY", 0.25) * s_d
-    ) * 100.0
-    if is_prov:
-      stage1_base *= cfg.get("PROVISIONAL_ACCURACY_DAMPENER", 0.40)
+        stage1_base = (
+            cfg.get("ACCURACY_WEIGHT_RD", 0.50) * s_rd
+            + cfg.get("ACCURACY_WEIGHT_MATCHES", 0.25) * s_m
+            + cfg.get("ACCURACY_WEIGHT_DIVERSITY", 0.25) * s_d
+        ) * 100.0
+        if is_prov:
+            stage1_base *= cfg.get("PROVISIONAL_ACCURACY_DAMPENER", 0.40)
 
-    trust_floor = float(cfg.get("ACCURACY_HIGH_TRUST_FLOOR", 65.0))
-    if stage1_base <= trust_floor or is_prov:
-      phi = (
-          min(1.0, cfg.get("ISLAND_ACCURACY_CAP", 80.0) / 100.0)
-          if k_city_bridges == 0
-          else 1.0
-      )
-      return (
-          round(stage1_base * phi, 1),
-          round(s_rd * 100.0, 1),
-          round(s_m * 100.0, 1),
-          round(s_d * 100.0, 1),
-      )
+        trust_floor = float(cfg.get("ACCURACY_HIGH_TRUST_FLOOR", 65.0))
+        if stage1_base <= trust_floor or is_prov:
+            phi = (
+                min(1.0, cfg.get("ISLAND_ACCURACY_CAP", 80.0) / 100.0)
+                if k_city_bridges == 0
+                else 1.0
+            )
+            return (
+                round(stage1_base * phi, 1),
+                round(s_rd * 100.0, 1),
+                round(s_m * 100.0, 1),
+                round(s_d * 100.0, 1),
+            )
 
-    t_m_elite = float(cfg.get("ACCURACY_TARGET_MATCHES_ELITE", 100.0))
-    t_o_elite = float(cfg.get("ACCURACY_TARGET_OPPONENTS_ELITE", 50.0))
-    t_c_elite = float(cfg.get("ACCURACY_TARGET_CITY_BRIDGES", 25.0))
-    t_co_elite = float(cfg.get("ACCURACY_TARGET_COUNTRY_BRIDGES", 10.0))
-    gamma = float(cfg.get("ACCURACY_CURVATURE_GAMMA", 1.40))
+        t_m_elite = float(cfg.get("ACCURACY_TARGET_MATCHES_ELITE", 100.0))
+        t_o_elite = float(cfg.get("ACCURACY_TARGET_OPPONENTS_ELITE", 50.0))
+        t_c_elite = float(cfg.get("ACCURACY_TARGET_CITY_BRIDGES", 25.0))
+        t_co_elite = float(cfg.get("ACCURACY_TARGET_COUNTRY_BRIDGES", 10.0))
+        gamma = float(cfg.get("ACCURACY_CURVATURE_GAMMA", 1.40))
 
-    s_m_h = min(1.0, m_count / t_m_elite)
-    s_o_h = min(1.0, opp_count / t_o_elite)
-    s_c_h = min(1.0, k_city_bridges / t_c_elite)
-    s_co_h = min(1.0, k_country_bridges / t_co_elite)
+        s_m_h = min(1.0, m_count / t_m_elite)
+        s_o_h = min(1.0, opp_count / t_o_elite)
+        s_c_h = min(1.0, k_city_bridges / t_c_elite)
+        s_co_h = min(1.0, k_country_bridges / t_co_elite)
 
-    h_score = (
-        (0.35 * s_m_h) + (0.35 * s_o_h) + (0.20 * s_c_h) + (0.10 * s_co_h)
-    )
-    h_ascent = (h_score**gamma) * (100.0 - trust_floor)
-    total_acc = min(100.0, trust_floor + h_ascent)
+        h_score = (
+            (0.35 * s_m_h) + (0.35 * s_o_h) + (0.20 * s_c_h) + (0.10 * s_co_h)
+        )
+        h_ascent = (h_score**gamma) * (100.0 - trust_floor)
+        total_acc = min(100.0, trust_floor + h_ascent)
 
-    return (
-        round(total_acc, 1),
-        round(s_rd * 100.0, 1),
-        round(s_m_h * 100.0, 1),
-        round(s_o_h * 100.0, 1),
-    )
+        return (
+            round(total_acc, 1),
+            round(s_rd * 100.0, 1),
+            round(s_m_h * 100.0, 1),
+            round(s_o_h * 100.0, 1),
+        )
 
-  @staticmethod
-  def sync_player_aggregates(player_id, conn=None):
-    owns = False
-    if not conn:
-      conn = get_db_connection()
-      owns = True
+    @staticmethod
+    def sync_player_aggregates(player_id, conn=None):
+        owns = False
+        if not conn:
+            conn = get_db_connection()
+            owns = True
 
-    cfg = RyftV16.get_configs(conn=conn)
+        cfg = RyftV16.get_configs(conn=conn)
 
-    m_count = conn.execute(
-        "SELECT COUNT(*) FROM matches WHERE team_a_p1_id = ? OR team_a_p2_id ="
-        " ? OR team_b_p1_id = ? OR team_b_p2_id = ?",
-        (player_id, player_id, player_id, player_id),
-    ).fetchone()[0]
-    opp_count = conn.execute(
-        """
+        m_count = conn.execute(
+            "SELECT COUNT(*) FROM matches WHERE team_a_p1_id = ? OR team_a_p2_id = ? OR team_b_p1_id = ? OR team_b_p2_id = ?",
+            (player_id, player_id, player_id, player_id),
+        ).fetchone()[0]
+        opp_count = conn.execute(
+            """
             SELECT COUNT(DISTINCT opp_id) FROM (
                 SELECT team_b_p1_id as opp_id FROM matches WHERE team_a_p1_id = ? OR team_a_p2_id = ? UNION
                 SELECT team_b_p2_id as opp_id FROM matches WHERE (team_a_p1_id = ? OR team_a_p2_id = ?) AND team_b_p2_id IS NOT NULL UNION
                 SELECT team_a_p1_id as opp_id FROM matches WHERE team_b_p1_id = ? OR team_b_p2_id = ? UNION
                 SELECT team_a_p2_id as opp_id FROM matches WHERE (team_b_p1_id = ? OR team_b_p2_id = ?) AND team_a_p2_id IS NOT NULL
             ) WHERE opp_id IS NOT NULL AND opp_id != ?
-        """,
-        (
-            player_id,
-            player_id,
-            player_id,
-            player_id,
-            player_id,
-            player_id,
-            player_id,
-            player_id,
-            player_id,
-        ),
-    ).fetchone()[0]
+            """,
+            (
+                player_id, player_id, player_id, player_id,
+                player_id, player_id, player_id, player_id,
+                player_id,
+            ),
+        ).fetchone()[0]
 
-    p_row = conn.execute(
-        """SELECT home_city_id, home_country_code, gender, rating_deviation, latent_mmr, 
-                  rating_accuracy_pct, is_manually_verified, is_anchor, is_provisional, calibration_tier 
-           FROM players WHERE player_id = ?""",
-        (player_id,),
-    ).fetchone()
+        p_row = conn.execute(
+            """SELECT home_city_id, home_country_code, gender, rating_deviation, latent_mmr, 
+                      rating_accuracy_pct, is_manually_verified, is_anchor, is_provisional, calibration_tier 
+               FROM players WHERE player_id = ?""",
+            (player_id,),
+        ).fetchone()
 
-    cross_city_matches, cross_country_matches = 0, 0
-    if p_row:
-      cross_city_matches = conn.execute(
-          """SELECT COUNT(*) FROM matches m 
-             JOIN venues v ON m.venue_id = v.venue_id 
-             WHERE (m.team_a_p1_id = ? OR m.team_a_p2_id = ? OR m.team_b_p1_id = ? OR m.team_b_p2_id = ?) 
-               AND v.city_id != ?""",
-          (player_id, player_id, player_id, player_id, p_row["home_city_id"]),
-      ).fetchone()[0]
-      cross_country_matches = conn.execute(
-          """SELECT COUNT(*) FROM matches m 
-             JOIN venues v ON m.venue_id = v.venue_id 
-             WHERE (m.team_a_p1_id = ? OR m.team_a_p2_id = ? OR m.team_b_p1_id = ? OR m.team_b_p2_id = ?) 
-               AND v.country_code != ?""",
-          (
-              player_id,
-              player_id,
-              player_id,
-              player_id,
-              p_row["home_country_code"],
-          ),
-      ).fetchone()[0]
+        cross_city_matches, cross_country_matches = 0, 0
+        if p_row:
+            cross_city_matches = conn.execute(
+                """SELECT COUNT(*) FROM matches m 
+                   JOIN venues v ON m.venue_id = v.venue_id 
+                   WHERE (m.team_a_p1_id = ? OR m.team_a_p2_id = ? OR m.team_b_p1_id = ? OR m.team_b_p2_id = ?) 
+                     AND v.city_id != ?""",
+                (player_id, player_id, player_id, player_id, p_row["home_city_id"]),
+            ).fetchone()[0]
+            cross_country_matches = conn.execute(
+                """SELECT COUNT(*) FROM matches m 
+                   JOIN venues v ON m.venue_id = v.venue_id 
+                   WHERE (m.team_a_p1_id = ? OR m.team_a_p2_id = ? OR m.team_b_p1_id = ? OR m.team_b_p2_id = ?) 
+                     AND v.country_code != ?""",
+                (
+                    player_id, player_id, player_id, player_id,
+                    p_row["home_country_code"],
+                ),
+            ).fetchone()[0]
 
-    is_act_city_bridge = (
-        1
-        if (
-            p_row
-            and p_row["rating_deviation"] <= 80.0
-            and cross_city_matches >= 5
+        is_act_city_bridge = (
+            1
+            if (
+                p_row
+                and p_row["rating_deviation"] <= 80.0
+                and cross_city_matches >= 5
+            )
+            else 0
         )
-        else 0
-    )
-    is_act_ctry_bridge = (
-        1
-        if (
-            p_row
-            and p_row["rating_deviation"] <= 80.0
-            and cross_country_matches >= 3
+        is_act_ctry_bridge = (
+            1
+            if (
+                p_row
+                and p_row["rating_deviation"] <= 80.0
+                and cross_country_matches >= 3
+            )
+            else 0
         )
-        else 0
-    )
-    cur_cat, _, _, _ = RyftV16.get_cat_for_rating(
-        p_row["latent_mmr"] if p_row else 3.0,
-        gender=p_row["gender"] if p_row else "MALE",
-        conn=conn,
-    )
+        cur_cat, _, _, _ = RyftV16.get_cat_for_rating(
+            p_row["latent_mmr"] if p_row else 3.0,
+            gender=p_row["gender"] if p_row else "MALE",
+            conn=conn,
+        )
 
-    # EARNED ANCHOR DYNAMIC EVALUATION
-    e_min_m = float(cfg.get("EARNED_ANCHOR_MIN_MATCHES", 35.0))
-    e_min_o = float(cfg.get("EARNED_ANCHOR_MIN_OPPONENTS", 20.0))
-    e_max_rd = float(cfg.get("EARNED_ANCHOR_MAX_RD", 55.0))
-    e_min_acc = float(cfg.get("EARNED_ANCHOR_MIN_ACCURACY", 85.0))
-    e_rolling_days = float(cfg.get("EARNED_ANCHOR_ROLLING_DAYS", 45.0))
-    e_min_roll_m = float(cfg.get("EARNED_ANCHOR_MIN_ROLLING_MATCHES", 3.0))
+        e_min_m = float(cfg.get("EARNED_ANCHOR_MIN_MATCHES", 35.0))
+        e_min_o = float(cfg.get("EARNED_ANCHOR_MIN_OPPONENTS", 20.0))
+        e_max_rd = float(cfg.get("EARNED_ANCHOR_MAX_RD", 55.0))
+        e_min_acc = float(cfg.get("EARNED_ANCHOR_MIN_ACCURACY", 85.0))
+        e_rolling_days = float(cfg.get("EARNED_ANCHOR_ROLLING_DAYS", 45.0))
+        e_min_roll_m = float(cfg.get("EARNED_ANCHOR_MIN_ROLLING_MATCHES", 3.0))
 
-    now_dt = datetime.now(timezone.utc)
-    roll_cutoff = (now_dt - timedelta(days=e_rolling_days)).isoformat()
-    recent_m_count = conn.execute(
-        """SELECT COUNT(*) FROM match_logs ml 
-           WHERE ml.player_id = ? AND ml.logged_at >= ?""",
-        (player_id, roll_cutoff),
-    ).fetchone()[0]
+        now_dt = datetime.now(timezone.utc)
+        roll_cutoff = (now_dt - timedelta(days=e_rolling_days)).isoformat()
+        recent_m_count = conn.execute(
+            """SELECT COUNT(*) FROM match_logs ml 
+               WHERE ml.player_id = ? AND ml.logged_at >= ?""",
+            (player_id, roll_cutoff),
+        ).fetchone()[0]
 
-    is_system_anchor = bool(p_row and p_row["is_anchor"] == 1)
-    is_earned_anchor = (
-        p_row
-        and p_row["is_provisional"] == 0
-        and m_count >= e_min_m
-        and opp_count >= e_min_o
-        and p_row["rating_deviation"] <= e_max_rd
-        and p_row["rating_accuracy_pct"] >= e_min_acc
-        and recent_m_count >= e_min_roll_m
-    )
+        is_system_anchor = bool(p_row and p_row["is_anchor"] == 1)
+        is_earned_anchor = (
+            p_row
+            and p_row["is_provisional"] == 0
+            and m_count >= e_min_m
+            and opp_count >= e_min_o
+            and p_row["rating_deviation"] <= e_max_rd
+            and p_row["rating_accuracy_pct"] >= e_min_acc
+            and recent_m_count >= e_min_roll_m
+        )
 
-    if is_system_anchor:
-      assigned_tier = "ANCHOR"
-    elif is_earned_anchor:
-      assigned_tier = "ANCHOR"
-    elif p_row and p_row["is_provisional"] == 0:
-      assigned_tier = "VERIFIED"
-    else:
-      assigned_tier = "PROVISIONAL"
+        if is_system_anchor:
+            assigned_tier = "ANCHOR"
+        elif is_earned_anchor:
+            assigned_tier = "ANCHOR"
+        elif p_row and p_row["is_provisional"] == 0:
+            assigned_tier = "VERIFIED"
+        else:
+            assigned_tier = "PROVISIONAL"
 
-    conn.execute(
-        """UPDATE players SET 
-            verified_matches_count=?, unique_opponents_count=?, bridge_matches_count=?, 
-            is_active_bridge=?, is_country_bridge=?, all_time_badge=?, calibration_tier=? 
-        WHERE player_id=?""",
-        (
-            m_count,
-            opp_count,
-            cross_city_matches,
-            is_act_city_bridge,
-            is_act_ctry_bridge,
-            cur_cat,
-            assigned_tier,
-            player_id,
-        ),
-    )
-    if owns:
-      conn.commit()
-      conn.close()
+        conn.execute(
+            """UPDATE players SET 
+                verified_matches_count=?, unique_opponents_count=?, bridge_matches_count=?, 
+                is_active_bridge=?, is_country_bridge=?, all_time_badge=?, calibration_tier=? 
+            WHERE player_id=?""",
+            (
+                m_count,
+                opp_count,
+                cross_city_matches,
+                is_act_city_bridge,
+                is_act_ctry_bridge,
+                cur_cat,
+                assigned_tier,
+                player_id,
+            ),
+        )
+        if owns:
+            conn.commit()
+            conn.close()
 
-  @staticmethod
-  def get_last_active_timestamp(
-      player_id, current_ts_str, conn, fallback_ts=None
-  ):
-    if conn and current_ts_str:
-      row = conn.execute(
-          """SELECT MAX(m.match_timestamp) FROM match_logs ml 
-             JOIN matches m ON ml.match_id = m.match_id WHERE ml.player_id = ? AND m.match_timestamp < ?""",
-          (player_id, current_ts_str),
-      ).fetchone()
-      if row and row[0]:
-        return row[0]
-    return fallback_ts
+    @staticmethod
+    def get_last_active_timestamp(
+        player_id, current_ts_str, conn, fallback_ts=None
+    ):
+        if conn and current_ts_str:
+            row = conn.execute(
+                """SELECT MAX(m.match_timestamp) FROM match_logs ml 
+                   JOIN matches m ON ml.match_id = m.match_id WHERE ml.player_id = ? AND m.match_timestamp < ?""",
+                (player_id, current_ts_str),
+            ).fetchone()
+            if row and row[0]:
+                return row[0]
+        return fallback_ts
 
-  @staticmethod
-  def get_rolling_24h_pairwise_delta(
-      player_id, opponent_ids, current_ts_str, conn
-  ):
-    if not current_ts_str or not conn or not opponent_ids:
-      return 0.0
-    try:
-      curr_dt = datetime.fromisoformat(current_ts_str.replace("Z", "+00:00"))
-    except Exception:
-      curr_dt = datetime.now(timezone.utc)
+    @staticmethod
+    def get_rolling_24h_pairwise_delta(
+        player_id, opponent_ids, current_ts_str, conn
+    ):
+        if not current_ts_str or not conn or not opponent_ids:
+            return 0.0
+        try:
+            curr_dt = datetime.fromisoformat(current_ts_str.replace("Z", "+00:00"))
+        except Exception:
+            curr_dt = datetime.now(timezone.utc)
 
-    opp_placeholders = ",".join("?" for _ in opponent_ids)
-    query = f"""
+        opp_placeholders = ",".join("?" for _ in opponent_ids)
+        query = f"""
             SELECT ml.delta_r, m.match_timestamp FROM match_logs ml 
             JOIN matches m ON ml.match_id = m.match_id 
             WHERE ml.player_id = ? AND m.is_tournament = 0 AND (
@@ -2032,1087 +1060,1097 @@ class RyftV16:
                 ((m.team_b_p1_id = ? OR m.team_b_p2_id = ?) AND (m.team_a_p1_id IN ({opp_placeholders}) OR m.team_a_p2_id IN ({opp_placeholders})))
             )
         """
-    params = (
-        [player_id, player_id, player_id]
-        + list(opponent_ids)
-        + list(opponent_ids)
-        + [player_id, player_id]
-        + list(opponent_ids)
-        + list(opponent_ids)
-    )
-    rows = conn.execute(query, params).fetchall()
+        params = (
+            [player_id, player_id, player_id]
+            + list(opponent_ids)
+            + list(opponent_ids)
+            + [player_id, player_id]
+            + list(opponent_ids)
+            + list(opponent_ids)
+        )
+        rows = conn.execute(query, params).fetchall()
 
-    rolling_delta = 0.0
-    for r in rows:
-      try:
-        m_dt = datetime.fromisoformat(r["match_timestamp"].replace("Z", "+00:00"))
-        if 0 <= (curr_dt - m_dt).total_seconds() <= 86400.0:
-          rolling_delta += float(r["delta_r"])
-      except Exception:
-        continue
-    return rolling_delta
+        rolling_delta = 0.0
+        for r in rows:
+            try:
+                m_dt = datetime.fromisoformat(r["match_timestamp"].replace("Z", "+00:00"))
+                if 0 <= (curr_dt - m_dt).total_seconds() <= 86400.0:
+                    rolling_delta += float(r["delta_r"])
+            except Exception:
+                continue
+        return rolling_delta
 
-  @staticmethod
-  def get_rolling_24h_global_delta(player_id, current_ts_str, conn):
-    if not current_ts_str or not conn:
-      return 0.0
-    try:
-      curr_dt = datetime.fromisoformat(current_ts_str.replace("Z", "+00:00"))
-    except Exception:
-      curr_dt = datetime.now(timezone.utc)
-
-    rows = conn.execute(
-        """SELECT ml.delta_r, m.match_timestamp FROM match_logs ml 
-           JOIN matches m ON ml.match_id = m.match_id WHERE ml.player_id = ? AND m.is_tournament = 0""",
-        (player_id,),
-    ).fetchall()
-
-    rolling_delta = 0.0
-    for r in rows:
-      try:
-        m_dt = datetime.fromisoformat(r["match_timestamp"].replace("Z", "+00:00"))
-        if 0 <= (curr_dt - m_dt).total_seconds() <= 86400.0:
-          rolling_delta += float(r["delta_r"])
-      except Exception:
-        continue
-    return rolling_delta
-
-  @classmethod
-  def compute_match(
-      cls,
-      p1_raw,
-      p2_raw,
-      p3_raw,
-      p4_raw,
-      s_a,
-      s_b,
-      g_w_raw,
-      g_l_raw,
-      fmt_id,
-      v_id,
-      is_singles,
-      is_dry=False,
-      is_tournament=False,
-      session_id=None,
-      session_checked_in=0,
-      conn=None,
-      cumulative_deltas=None,
-      match_timestamp=None,
-  ):
-    owns = False
-    if not conn:
-      conn = get_db_connection()
-      owns = True
-
-    p1, p3 = dict(p1_raw), dict(p3_raw)
-    p2 = dict(p2_raw) if p2_raw else None
-    p4 = dict(p4_raw) if p4_raw else None
-
-    cfg = cls.get_configs(conn=conn)
-    p_exp = cfg.get("POWER_MEAN_P", 3.0)
-
-    is_draw = s_a == s_b
-    g_w, g_l = max(g_w_raw, g_l_raw + (0 if is_draw else 1)), g_l_raw
-
-    effective_match_ts = (
-        match_timestamp or datetime.now(timezone.utc).isoformat()
-    )
-    try:
-      match_dt = datetime.fromisoformat(
-          effective_match_ts.replace("Z", "+00:00")
-      )
-    except Exception:
-      match_dt = datetime.now(timezone.utc)
-
-    now_utc = datetime.now(timezone.utc)
-    is_retroactive_commit = False
-    if bool(cfg.get("ENABLE_RETROACTIVE_INGESTION", 1)):
-      lookback_hours = float(cfg.get("MAX_RETROACTIVE_LOOKBACK_HOURS", 72.0))
-      age_hours = (now_utc - match_dt).total_seconds() / 3600.0
-      if age_hours > 0.5 and age_hours <= lookback_hours:
-        is_retroactive_commit = True
-
-    ven_row = conn.execute(
-        "SELECT venue_id, city_id, country_code FROM venues WHERE venue_id = ?",
-        (v_id,),
-    ).fetchone()
-    venue_city = ven_row["city_id"] if ven_row else None
-    venue_country = ven_row["country_code"] if ven_row else None
-
-    all_on_court = [p1, p3] + ([p2, p4] if not is_singles else [])
-
-    is_venue_bridge, is_city_bridge, is_country_bridge = False, False, False
-    city_travelers, country_travelers, venue_travelers = [], [], []
-
-    for px in all_on_court:
-      p_ven = px.get("home_venue_id")
-      p_cit = px.get("home_city_id")
-      p_cnt = px.get("home_country_code")
-      p_name = px.get("display_name", "Player")
-
-      if p_cnt and venue_country and p_cnt != venue_country:
-        is_country_bridge = True
-        country_travelers.append(f"{p_name} (Intl)")
-      elif p_cit and venue_city and p_cit != venue_city:
-        is_city_bridge = True
-        city_travelers.append(f"{p_name} (Cross-City)")
-      elif p_ven and v_id and p_ven != v_id and p_cit == venue_city:
-        is_venue_bridge = True
-        venue_travelers.append(f"{p_name} (Cross-Club)")
-
-    # Rust evaluation with System Anchor exemption
-    for px in all_on_court:
-      stored_rd = float(px.get("rating_deviation", 350.0))
-      is_sys_anchor = bool(px.get("is_anchor", 0) == 1)
-
-      last_ts = cls.get_last_active_timestamp(
-          px["player_id"],
-          effective_match_ts,
-          conn,
-          fallback_ts=px.get("last_match_time") or px.get("created_at"),
-      )
-      px_flags = []
-      if is_retroactive_commit:
-        px_flags.append("[ALERT_RETROACTIVE_ATTESTATION]")
-
-      if last_ts:
+    @staticmethod
+    def get_rolling_24h_global_delta(player_id, current_ts_str, conn):
+        if not current_ts_str or not conn:
+            return 0.0
         try:
-          last_dt = datetime.fromisoformat(last_ts.replace("Z", "+00:00"))
-          delta_days = max(
-              0.0, (match_dt - last_dt).total_seconds() / 86400.0
-          )
-          c_drift = float(cfg.get("TEMPORAL_DRIFT_CONSTANT", 5.50))
-          grace_days = float(cfg.get("INACTIVITY_GRACE_DAYS", 7.0))
-
-          if delta_days >= grace_days and not is_sys_anchor:
-            rust_rd = math.sqrt(
-                stored_rd**2 + (c_drift**2) * (delta_days - grace_days)
-            )
-            eff_rd = min(350.0, rust_rd)
-            px_flags.append(
-                f"[ALERT_INACTIVITY_RUST] ({int(delta_days)}d layoff)"
-            )
-          else:
-            eff_rd = stored_rd
+            curr_dt = datetime.fromisoformat(current_ts_str.replace("Z", "+00:00"))
         except Exception:
-          eff_rd = stored_rd
-      else:
-        eff_rd = stored_rd
+            curr_dt = datetime.now(timezone.utc)
 
-      reprov_threshold = float(
-          cfg.get("INACTIVITY_REPROVISION_THRESHOLD", 100.0)
-      )
-      if (
-          eff_rd > reprov_threshold
-          and px.get("calibration_tier") == "VERIFIED"
-          and not is_sys_anchor
-      ):
-        px_flags.append("[ALERT_INACTIVITY_REPROVISION_FLAG]")
+        rows = conn.execute(
+            """SELECT ml.delta_r, m.match_timestamp FROM match_logs ml 
+               JOIN matches m ON ml.match_id = m.match_id WHERE ml.player_id = ? AND m.is_tournament = 0""",
+            (player_id,),
+        ).fetchall()
 
-      px["effective_pre_rd"] = eff_rd
-      px["inactivity_flags"] = px_flags
+        rolling_delta = 0.0
+        for r in rows:
+            try:
+                m_dt = datetime.fromisoformat(r["match_timestamp"].replace("Z", "+00:00"))
+                if 0 <= (curr_dt - m_dt).total_seconds() <= 86400.0:
+                    rolling_delta += float(r["delta_r"])
+            except Exception:
+                continue
+        return rolling_delta
 
-    # Snapshot Ratings at effective_match_ts if retroactive
-    for px in all_on_court:
-      if is_retroactive_commit:
-        hist_row = conn.execute(
-            """SELECT post_latent_mmr, post_display_rating FROM match_logs ml
-               JOIN matches m ON ml.match_id = m.match_id 
-               WHERE ml.player_id = ? AND m.match_timestamp <= ? 
-               ORDER BY m.match_timestamp DESC LIMIT 1""",
-            (px["player_id"], effective_match_ts),
-        ).fetchone()
-        if hist_row:
-          px["snapshot_mmr"] = float(hist_row["post_latent_mmr"])
-        else:
-          px["snapshot_mmr"] = float(
-              px.get("initial_rating", px.get("latent_mmr", 3.0))
-          )
-      else:
-        px["snapshot_mmr"] = float(px.get("latent_mmr", 3.0))
+    @classmethod
+    def compute_match(
+        cls,
+        p1_raw,
+        p2_raw,
+        p3_raw,
+        p4_raw,
+        s_a,
+        s_b,
+        g_w_raw,
+        g_l_raw,
+        fmt_id,
+        v_id,
+        is_singles,
+        is_dry=False,
+        is_tournament=False,
+        session_id=None,
+        session_checked_in=0,
+        conn=None,
+        cumulative_deltas=None,
+        match_timestamp=None,
+    ):
+        owns = False
+        if not conn:
+            conn = get_db_connection()
+            owns = True
 
-    ta_r = (
-        float(p1["snapshot_mmr"])
-        if is_singles
-        else (
-            (float(p1["snapshot_mmr"]) ** p_exp + float(p2["snapshot_mmr"]) ** p_exp)
-            / 2.0
+        p1, p3 = dict(p1_raw), dict(p3_raw)
+        p2 = dict(p2_raw) if p2_raw else None
+        p4 = dict(p4_raw) if p4_raw else None
+
+        cfg = cls.get_configs(conn=conn)
+        p_exp = cfg.get("POWER_MEAN_P", 3.0)
+
+        is_draw = s_a == s_b
+        g_w, g_l = max(g_w_raw, g_l_raw + (0 if is_draw else 1)), g_l_raw
+
+        effective_match_ts = (
+            match_timestamp or datetime.now(timezone.utc).isoformat()
         )
-        ** (1.0 / p_exp)
-    )
-    tb_r = (
-        float(p3["snapshot_mmr"])
-        if is_singles
-        else (
-            (float(p3["snapshot_mmr"]) ** p_exp + float(p4["snapshot_mmr"]) ** p_exp)
-            / 2.0
-        )
-        ** (1.0 / p_exp)
-    )
-
-    ea = 1.0 / (1.0 + 10.0 ** ((tb_r - ta_r) / cfg.get("LOGISTIC_BETA", 2.0)))
-    act_a = 0.5 if is_draw else (1.0 if s_a > s_b else 0.0)
-
-    tot_g = g_w + g_l
-    m_base, m_scale = cfg.get("MARGIN_BASE", 0.80), cfg.get(
-        "MARGIN_SCALE", 0.40
-    )
-    s_margin = max(
-        0.80,
-        min(
-            1.20,
-            (
-                m_base + (m_scale * ((g_w - g_l) / tot_g))
-                if tot_g > 0
-                else 1.0
-            ),
-        ),
-    )
-
-    fmt_row = conn.execute(
-        "SELECT mc_weight FROM match_formats WHERE format_id = ?", (fmt_id,)
-    ).fetchone()
-    db_mc = float(fmt_row["mc_weight"]) if fmt_row else 1.00
-    mc = float(cfg.get(f"MC_{fmt_id}", db_mc))
-
-    opp_rd_b = (
-        max(float(p3["effective_pre_rd"]), float(p4["effective_pre_rd"]))
-        if not is_singles
-        else float(p3["effective_pre_rd"])
-    )
-    opp_rd_a = (
-        max(float(p1["effective_pre_rd"]), float(p2["effective_pre_rd"]))
-        if not is_singles
-        else float(p1["effective_pre_rd"])
-    )
-
-    participants = [(p1, True, p2, opp_rd_b), (p3, False, p4, opp_rd_a)]
-    if not is_singles:
-      participants.extend(
-          [(p2, True, p1, opp_rd_b), (p4, False, p3, opp_rd_a)]
-      )
-
-    res = []
-    prov_count = sum(
-        1 for px, _, _, _ in participants if bool(px.get("is_provisional", 1))
-    )
-    o_map = [
-        cfg.get("COHORT_FACTOR_0_PROV", 1.0),
-        cfg.get("COHORT_FACTOR_1_PROV", 0.75),
-        cfg.get("COHORT_FACTOR_2_PROV", 0.50),
-        cfg.get("COHORT_FACTOR_3_PROV", 0.25),
-    ]
-    omega = o_map[min(3, max(0, prov_count - 1))]
-
-    for p, is_a, partner, opp_rd in participants:
-      flags = list(p.get("inactivity_flags", []))
-
-      if is_country_bridge:
-        flags.append(
-            f"[ALERT_CROSS_COUNTRY_BRIDGE] ({', '.join(country_travelers)})"
-        )
-      elif is_city_bridge:
-        flags.append(f"[ALERT_CROSS_CITY_BRIDGE] ({', '.join(city_travelers)})")
-      elif is_venue_bridge:
-        flags.append(f"[ALERT_VENUE_BRIDGE] ({', '.join(venue_travelers)})")
-
-      r = float(p.get("latent_mmr", 3.0))
-      r_eval = float(p["snapshot_mmr"])
-      rd = float(
-          p.get("effective_pre_rd", p.get("rating_deviation", 350.0))
-      )
-      prov = bool(p.get("is_provisional", 1))
-      p_acc = float(p.get("rating_accuracy_pct", 0.0))
-      is_manual_override = bool(p.get("is_manually_verified", 0))
-      is_quar = bool(p.get("is_quarantined", 0))
-      won = (is_a and s_a > s_b) or (not is_a and s_b > s_a)
-
-      q, sig = 0.0057565, cfg.get("RD_INFO_VARIANCE", 110.0)
-      g_opp = 1.0 / math.sqrt(
-          1.0 + (3.0 * (q**2) * (opp_rd**2)) / (math.pi**2)
-      )
-
-      k_ind = cfg.get("K_MAX", 0.400) - (r_eval / cfg.get("R_MAX", 7.000)) * (
-          cfg.get("K_MAX", 0.400) - cfg.get("K_MIN", 0.080)
-      )
-      _, _, _, cat_speed = cls.get_cat_for_rating(
-          r_eval, gender=p.get("gender", "MALE"), conn=conn
-      )
-      if cat_speed != 1.00:
-        k_ind *= cat_speed
-        flags.append(f"CAT_SPEED ({cat_speed:.2f}x)")
-
-      decay_ind = (
-          ((7.000 - r_eval) / 7.000)
-          * (((7.000 - r_eval) / (7.000 - 6.300)) ** 2.5)
-          if r_eval >= 6.300
-          else ((7.000 - r_eval) / 7.000)
-      )
-      if r_eval >= 6.300:
-        flags.append("[ALERT_ELITE_DRAG_MAX_RESISTANCE]")
-
-      direction = 1.0 if is_a else -1.0
-      standard_einstein_delta = (
-          k_ind
-          * decay_ind
-          * mc
-          * s_margin
-          * g_opp
-          * direction
-          * (act_a - ea)
-      )
-
-      opp_team_r = tb_r if is_a else ta_r
-      partner_gap = (
-          abs(r_eval - float(partner["snapshot_mmr"]))
-          if (not is_singles and partner)
-          else 0.0
-      )
-
-      # CONTINUOUS ACCURACY-TAPERED RIGHTSIZING CONTROLS
-      acc_ceil = float(cfg.get("RIGHTSIZING_ACCURACY_CEILING", 80.0))
-      acc_floor = float(cfg.get("ACCURACY_HIGH_TRUST_FLOOR", 65.0))
-      max_taper_w = float(cfg.get("RIGHTSIZING_TAPER_MAX_WEIGHT", 0.350))
-
-      if prov:
-        w_rightsize = 1.0
-      elif p_acc < acc_ceil:
-        w_rightsize = (
-            max(0.0, (acc_ceil - p_acc) / max(1.0, (acc_ceil - acc_floor)))
-            * max_taper_w
-        )
-      else:
-        w_rightsize = 0.0
-
-      # UNIFIED WIN vs. LOSS EVALUATION ENGINE
-      if is_quar:
-        raw_d = 0.000
-        flags.append("[ALERT_QUARANTINE_ISOLATION_ACTIVE]")
-      elif is_draw:
-        raw_d = standard_einstein_delta
-        flags.append("DRAW_PARITY_EXCHANGE")
-      elif won:
-        # STRICT WIN NON-NEGATIVITY (ALL PLAYERS EARN >= +0.0005)
-        actual_game_ratio = (g_w_raw + 0.5) / (g_l_raw + 0.5)
-        r_perf_team = opp_team_r + cfg.get("LOGISTIC_BETA", 2.0) * math.log10(
-            actual_game_ratio
-        )
-
-        if w_rightsize > 0.0:
-          raw_pr_delta = (
-              (r_perf_team - r_eval)
-              * cfg.get("PROVISIONAL_ABSORPTION_ALPHA", 0.45)
-              * mc
-              * g_opp
-          )
-          max_d = cfg.get("MAX_PROVISIONAL_DELTA", 0.750)
-
-          if r_perf_team >= r_eval:
-            bounded_interp = min(max_d, max(0.0005, raw_pr_delta))
-          else:
-            bounded_interp = max(0.0005, standard_einstein_delta)
-            flags.append("[ALERT_RIGHTSIZING_WIN_NON_NEGATIVE_FLOOR]")
-
-          raw_d = (1.0 - w_rightsize) * max(
-              0.0005, standard_einstein_delta
-          ) + (w_rightsize * bounded_interp)
-          raw_d = max(0.0005, raw_d)
-
-          if prov:
-            flags.append("RIGHTSIZING_INTERPOLATION")
-          else:
-            flags.append(
-                f"ACCURACY_TAPERED_RIGHTSIZING ({int(w_rightsize*100)}%)"
+        try:
+            match_dt = datetime.fromisoformat(
+                effective_match_ts.replace("Z", "+00:00")
             )
-        else:
-          raw_d = max(0.0005, standard_einstein_delta)
+        except Exception:
+            match_dt = datetime.now(timezone.utc)
 
-        if (
-            not is_singles
-            and partner
-            and partner_gap >= 1.500
-            and r_eval > float(partner["snapshot_mmr"])
-        ):
-          raw_d = max(0.0050, raw_d)
-          flags.append("[ALERT_ANCHOR_CARRY_WIN_SHIELD]")
+        now_utc = datetime.now(timezone.utc)
+        is_retroactive_commit = False
+        if bool(cfg.get("ENABLE_RETROACTIVE_INGESTION", 1)):
+            lookback_hours = float(cfg.get("MAX_RETROACTIVE_LOOKBACK_HOURS", 72.0))
+            age_hours = (now_utc - match_dt).total_seconds() / 3600.0
+            if age_hours > 0.5 and age_hours <= lookback_hours:
+                is_retroactive_commit = True
 
-      else:
-        # LOSS EVALUATION (UNDERDOG DISCOVERY OR NON-POSITIVE CLAMP)
-        tot_games = g_w_raw + g_l_raw
-        game_win_share = (g_l_raw / tot_games) if tot_games > 0 else 0.0
+        ven_row = conn.execute(
+            "SELECT venue_id, city_id, country_code FROM venues WHERE venue_id = ?",
+            (v_id,),
+        ).fetchone()
+        venue_city = ven_row["city_id"] if ven_row else None
+        venue_country = ven_row["country_code"] if ven_row else None
 
-        allow_discovery = bool(cfg.get("ALLOW_UNDERDOG_LOSS_DISCOVERY", 1.0))
-        min_game_share = float(cfg.get("UNDERDOG_LOSS_MIN_GAME_SHARE", 0.400))
-        min_opp_gap = float(cfg.get("UNDERDOG_LOSS_MIN_RATING_GAP", 1.000))
-        max_discovery_delta = float(cfg.get("UNDERDOG_LOSS_MAX_DELTA", 0.0300))
+        all_on_court = [p1, p3] + ([p2, p4] if not is_singles else [])
 
-        actual_game_ratio = (g_l_raw + 0.5) / (g_w_raw + 0.5)
-        r_perf_team = opp_team_r + cfg.get("LOGISTIC_BETA", 2.0) * math.log10(
-            actual_game_ratio
-        )
-        opp_gap = opp_team_r - r_eval
+        is_venue_bridge, is_city_bridge, is_country_bridge = False, False, False
+        city_travelers, country_travelers, venue_travelers = [], [], []
 
-        is_underdog_discovery_eligible = (
-            allow_discovery
-            and (game_win_share >= min_game_share)
-            and (opp_gap >= min_opp_gap)
-            and (w_rightsize > 0.0)
-        )
+        for px in all_on_court:
+            p_ven = px.get("home_venue_id")
+            p_cit = px.get("home_city_id")
+            p_cnt = px.get("home_country_code")
+            p_name = px.get("display_name", "Player")
 
-        if is_underdog_discovery_eligible:
-          raw_discovery = (r_perf_team - r_eval) * 0.10 * mc * g_opp
-          raw_d = min(max_discovery_delta, max(0.0050, raw_discovery))
-          flags.append("[ALERT_UNDERDOG_DEFEAT_MICRO_DISCOVERY]")
-        else:
-          if w_rightsize > 0.0:
-            if r_perf_team > r_eval:
-              bounded_loss = 0.0000
-              flags.append("[ALERT_LOSS_NON_POSITIVITY_CLAMP]")
+            if p_cnt and venue_country and p_cnt != venue_country:
+                is_country_bridge = True
+                country_travelers.append(f"{p_name} (Intl)")
+            elif p_cit and venue_city and p_cit != venue_city:
+                is_city_bridge = True
+                city_travelers.append(f"{p_name} (Cross-City)")
+            elif p_ven and v_id and p_ven != v_id and p_cit == venue_city:
+                is_venue_bridge = True
+                venue_travelers.append(f"{p_name} (Cross-Club)")
+
+        # Rust evaluation with System Anchor exemption
+        for px in all_on_court:
+            stored_rd = float(px.get("rating_deviation", 350.0))
+            is_sys_anchor = bool(px.get("is_anchor", 0) == 1)
+
+            last_ts = cls.get_last_active_timestamp(
+                px["player_id"],
+                effective_match_ts,
+                conn,
+                fallback_ts=px.get("last_match_time") or px.get("created_at"),
+            )
+            px_flags = []
+            if is_retroactive_commit:
+                px_flags.append("[ALERT_RETROACTIVE_ATTESTATION]")
+
+            if last_ts:
+                try:
+                    last_dt = datetime.fromisoformat(last_ts.replace("Z", "+00:00"))
+                    delta_days = max(
+                        0.0, (match_dt - last_dt).total_seconds() / 86400.0
+                    )
+                    c_drift = float(cfg.get("TEMPORAL_DRIFT_CONSTANT", 5.50))
+                    grace_days = float(cfg.get("INACTIVITY_GRACE_DAYS", 7.0))
+
+                    if delta_days >= grace_days and not is_sys_anchor:
+                        rust_rd = math.sqrt(
+                            stored_rd**2 + (c_drift**2) * (delta_days - grace_days)
+                        )
+                        eff_rd = min(350.0, rust_rd)
+                        px_flags.append(
+                            f"[ALERT_INACTIVITY_RUST] ({int(delta_days)}d layoff)"
+                        )
+                    else:
+                        eff_rd = stored_rd
+                except Exception:
+                    eff_rd = stored_rd
             else:
-              raw_pr_delta = (
-                  (r_perf_team - r_eval)
-                  * cfg.get("PROVISIONAL_ABSORPTION_ALPHA", 0.45)
-                  * mc
-                  * g_opp
-              )
-              max_d = cfg.get("MAX_PROVISIONAL_DELTA", 0.750)
-              bounded_loss = max(-max_d, min(0.0, raw_pr_delta))
+                eff_rd = stored_rd
 
-            raw_d = (1.0 - w_rightsize) * min(
-                0.0000, standard_einstein_delta
-            ) + (w_rightsize * bounded_loss)
-            raw_d = min(0.0000, raw_d)
+            reprov_threshold = float(
+                cfg.get("INACTIVITY_REPROVISION_THRESHOLD", 100.0)
+            )
+            if (
+                eff_rd > reprov_threshold
+                and px.get("calibration_tier") == "VERIFIED"
+                and not is_sys_anchor
+            ):
+                px_flags.append("[ALERT_INACTIVITY_REPROVISION_FLAG]")
+
+            px["effective_pre_rd"] = eff_rd
+            px["inactivity_flags"] = px_flags
+
+        # Snapshot Ratings at effective_match_ts if retroactive
+        for px in all_on_court:
+            if is_retroactive_commit:
+                hist_row = conn.execute(
+                    """SELECT post_latent_mmr, post_display_rating FROM match_logs ml
+                       JOIN matches m ON ml.match_id = m.match_id 
+                       WHERE ml.player_id = ? AND m.match_timestamp <= ? 
+                       ORDER BY m.match_timestamp DESC LIMIT 1""",
+                    (px["player_id"], effective_match_ts),
+                ).fetchone()
+                if hist_row:
+                    px["snapshot_mmr"] = float(hist_row["post_latent_mmr"])
+                else:
+                    px["snapshot_mmr"] = float(
+                        px.get("initial_rating", px.get("latent_mmr", 3.0))
+                    )
+            else:
+                px["snapshot_mmr"] = float(px.get("latent_mmr", 3.0))
+
+        ta_r = (
+            float(p1["snapshot_mmr"])
+            if is_singles
+            else (
+                (float(p1["snapshot_mmr"]) ** p_exp + float(p2["snapshot_mmr"]) ** p_exp)
+                / 2.0
+            )
+            ** (1.0 / p_exp)
+        )
+        tb_r = (
+            float(p3["snapshot_mmr"])
+            if is_singles
+            else (
+                (float(p3["snapshot_mmr"]) ** p_exp + float(p4["snapshot_mmr"]) ** p_exp)
+                / 2.0
+            )
+            ** (1.0 / p_exp)
+        )
+
+        ea = 1.0 / (1.0 + 10.0 ** ((tb_r - ta_r) / cfg.get("LOGISTIC_BETA", 2.0)))
+        act_a = 0.5 if is_draw else (1.0 if s_a > s_b else 0.0)
+
+        tot_g = g_w + g_l
+        m_base, m_scale = cfg.get("MARGIN_BASE", 0.80), cfg.get(
+            "MARGIN_SCALE", 0.40
+        )
+        s_margin = max(
+            0.80,
+            min(
+                1.20,
+                (
+                    m_base + (m_scale * ((g_w - g_l) / tot_g))
+                    if tot_g > 0
+                    else 1.0
+                ),
+            ),
+        )
+
+        fmt_row = conn.execute(
+            "SELECT mc_weight FROM match_formats WHERE format_id = ?", (fmt_id,)
+        ).fetchone()
+        db_mc = float(fmt_row["mc_weight"]) if fmt_row else 1.00
+        mc = float(cfg.get(f"MC_{fmt_id}", db_mc))
+
+        opp_rd_b = (
+            max(float(p3["effective_pre_rd"]), float(p4["effective_pre_rd"]))
+            if not is_singles
+            else float(p3["effective_pre_rd"])
+        )
+        opp_rd_a = (
+            max(float(p1["effective_pre_rd"]), float(p2["effective_pre_rd"]))
+            if not is_singles
+            else float(p1["effective_pre_rd"])
+        )
+
+        participants = [(p1, True, p2, opp_rd_b), (p3, False, p4, opp_rd_a)]
+        if not is_singles:
+            participants.extend(
+                [(p2, True, p1, opp_rd_b), (p4, False, p3, opp_rd_a)]
+            )
+
+        res = []
+        prov_count = sum(
+            1 for px, _, _, _ in participants if bool(px.get("is_provisional", 1))
+        )
+        o_map = [
+            cfg.get("COHORT_FACTOR_0_PROV", 1.0),
+            cfg.get("COHORT_FACTOR_1_PROV", 0.75),
+            cfg.get("COHORT_FACTOR_2_PROV", 0.50),
+            cfg.get("COHORT_FACTOR_3_PROV", 0.25),
+        ]
+        omega = o_map[min(3, max(0, prov_count - 1))]
+
+        # DYNAMIC COHORT ESCALATION (DCE)
+        dce_flag = None
+        if prov_count >= 3 and bool(
+            cfg.get("ENABLE_DYNAMIC_COHORT_ESCALATION", 1.0)
+        ):
+            avg_cohort_m = sum(
+                int(px.get("verified_matches_count", 0))
+                for px, _, _, _ in participants
+            ) / float(len(participants))
+            dce_t1_m = float(cfg.get("DCE_TIER_1_MATCHES", 3.0))
+            dce_t2_m = float(cfg.get("DCE_TIER_2_MATCHES", 7.0))
+            dce_om1 = float(cfg.get("DCE_TIER_1_OMEGA", 0.50))
+            dce_om2 = float(cfg.get("DCE_TIER_2_OMEGA", 0.75))
+            if avg_cohort_m >= dce_t2_m:
+                omega = dce_om2
+                dce_flag = f"[ALERT_DCE_TIER_2_OMEGA_{omega:.2f}]"
+            elif avg_cohort_m >= dce_t1_m:
+                omega = dce_om1
+                dce_flag = f"[ALERT_DCE_TIER_1_OMEGA_{omega:.2f}]"
+
+        for p, is_a, partner, opp_rd in participants:
+            flags = list(p.get("inactivity_flags", []))
+            if dce_flag:
+                flags.append(dce_flag)
+
+            if is_country_bridge:
+                flags.append(
+                    f"[ALERT_CROSS_COUNTRY_BRIDGE] ({', '.join(country_travelers)})"
+                )
+            elif is_city_bridge:
+                flags.append(f"[ALERT_CROSS_CITY_BRIDGE] ({', '.join(city_travelers)})")
+            elif is_venue_bridge:
+                flags.append(f"[ALERT_VENUE_BRIDGE] ({', '.join(venue_travelers)})")
+
+            r = float(p.get("latent_mmr", 3.0))
+            r_eval = float(p["snapshot_mmr"])
+            rd = float(
+                p.get("effective_pre_rd", p.get("rating_deviation", 350.0))
+            )
+            prov = bool(p.get("is_provisional", 1))
+            p_acc = float(p.get("rating_accuracy_pct", 0.0))
+            is_manual_override = bool(p.get("is_manually_verified", 0))
+            is_quar = bool(p.get("is_quarantined", 0))
+            won = (is_a and s_a > s_b) or (not is_a and s_b > s_a)
+
+            q, sig = 0.0057565, cfg.get("RD_INFO_VARIANCE", 110.0)
+            g_opp = 1.0 / math.sqrt(
+                1.0 + (3.0 * (q**2) * (opp_rd**2)) / (math.pi**2)
+            )
+
+            k_ind = cfg.get("K_MAX", 0.400) - (r_eval / cfg.get("R_MAX", 7.000)) * (
+                cfg.get("K_MAX", 0.400) - cfg.get("K_MIN", 0.080)
+            )
+            _, _, _, cat_speed = cls.get_cat_for_rating(
+                r_eval, gender=p.get("gender", "MALE"), conn=conn
+            )
+            if cat_speed != 1.00:
+                k_ind *= cat_speed
+                flags.append(f"CAT_SPEED ({cat_speed:.2f}x)")
+
+            decay_ind = (
+                ((7.000 - r_eval) / 7.000)
+                * (((7.000 - r_eval) / (7.000 - 6.300)) ** 2.5)
+                if r_eval >= 6.300
+                else ((7.000 - r_eval) / 7.000)
+            )
+            if r_eval >= 6.300:
+                flags.append("[ALERT_ELITE_DRAG_MAX_RESISTANCE]")
+
+            direction = 1.0 if is_a else -1.0
+            standard_einstein_delta = (
+                k_ind
+                * decay_ind
+                * mc
+                * s_margin
+                * g_opp
+                * direction
+                * (act_a - ea)
+            )
+
+            opp_team_r = tb_r if is_a else ta_r
+            partner_gap = (
+                abs(r_eval - float(partner["snapshot_mmr"]))
+                if (not is_singles and partner)
+                else 0.0
+            )
+
+            acc_ceil = float(cfg.get("RIGHTSIZING_ACCURACY_CEILING", 80.0))
+            acc_floor = float(cfg.get("ACCURACY_HIGH_TRUST_FLOOR", 65.0))
+            max_taper_w = float(cfg.get("RIGHTSIZING_TAPER_MAX_WEIGHT", 0.350))
 
             if prov:
-              flags.append("RIGHTSIZING_INTERPOLATION")
-            else:
-              flags.append(
-                  f"ACCURACY_TAPERED_RIGHTSIZING ({int(w_rightsize*100)}%)"
-              )
-          else:
-            raw_d = min(0.0000, standard_einstein_delta)
-
-      # PARTNER DISPARITY & MUTUAL PROVISIONAL PARITY CLAMP
-      if not is_singles and partner and not is_quar and not is_draw:
-        gap = abs(r_eval - float(partner["snapshot_mmr"]))
-        part_prov = bool(partner.get("is_provisional", 1))
-        part_rd = float(
-            partner.get(
-                "effective_pre_rd", partner.get("rating_deviation", 350.0)
-            )
-        )
-
-        max_prov_gap = float(cfg.get("MUTUAL_PROV_MAX_PARTNER_GAP", 1.500))
-        if prov and part_prov and rd > 200.0 and part_rd > 200.0:
-          if gap <= max_prov_gap:
-            flags.append("MUTUAL_PROV_EXEMPTION")
-          else:
-            flags.append("[ALERT_MUTUAL_PROV_EXTREME_GAP_OVERRIDE]")
-            if won and r_eval < float(partner["snapshot_mmr"]):
-              ac_m = (
-                  cfg.get("ANTI_CARRY_MULT_TIER_2", 0.25)
-                  if gap >= 2.50
-                  else cfg.get("ANTI_CARRY_MULT_TIER_1", 0.50)
-              )
-              raw_d *= ac_m
-              flags.append(f"ANTI_CARRY ({int((1-ac_m)*100)}%)")
-        else:
-          if not won and r_eval > float(partner["snapshot_mmr"]):
-            dd = (
-                cfg.get("ICE_OUT_MULT_TIER_2", 0.05)
-                if gap >= cfg.get("ICE_OUT_GAP_TIER_2", 2.00)
-                else (
-                    cfg.get("ICE_OUT_MULT_TIER_1", 0.20)
-                    if gap >= cfg.get("ICE_OUT_GAP_TIER_1", 1.50)
-                    else (0.50 if gap >= 1.0 else 1.00)
+                w_rightsize = 1.0
+            elif p_acc < acc_ceil:
+                w_rightsize = (
+                    max(0.0, (acc_ceil - p_acc) / max(1.0, (acc_ceil - acc_floor)))
+                    * max_taper_w
                 )
-            )
-            raw_d *= dd
-            if dd < 1.00:
-              flags.append(
-                  f"[ALERT_ICE_OUT_ANCHOR_SHIELD] ({int((1-dd)*100)}%)"
-              )
-          elif won and r_eval < float(partner["snapshot_mmr"]):
-            ac_m1 = cfg.get("ANTI_CARRY_MULT_TIER_1", 0.50)
-            ac_gap1 = cfg.get("ANTI_CARRY_GAP_TIER_1", 1.75)
-            dd = (
-                cfg.get("ANTI_CARRY_MULT_TIER_2", 0.25)
-                if gap >= cfg.get("ANTI_CARRY_GAP_TIER_2", 2.50)
-                else (
-                    ac_m1
-                    if gap >= ac_gap1
-                    else (0.75 if gap >= 1.2 else 1.00)
-                )
-            )
-            raw_d *= dd
-            if dd < 1.00:
-              flags.append(f"ANTI_CARRY ({int((1-dd)*100)}%)")
-            if not prov:
-              raw_d = max(0.0010, raw_d)
-
-      m_played = int(p.get("verified_matches_count", 0))
-      w_g = 1.0
-      min_opp_target = float(cfg.get("GRAPH_DAMPENING_MIN_OPPONENTS", 5.0))
-      centrality_target = float(cfg.get("GRAPH_CENTRALITY_TARGET", 0.200))
-      if m_played >= 5:
-        w_g = min(
-            1.0,
-            float(p.get("graph_centrality", 0.20)) / centrality_target,
-        ) * min(
-            1.0,
-            float(p.get("unique_opponents_count", 0)) / min_opp_target,
-        )
-
-      if w_g < 1.0 and not is_quar and not prov:
-        raw_d *= w_g
-        flags.append(f"[ALERT_DISCONNECTED_GRAPH_DAMPENING] ({w_g:.2f}x)")
-
-      opp_ids = (
-          [p3["player_id"], p4["player_id"]]
-          if is_a
-          else [p1["player_id"], p2["player_id"]]
-      )
-      opp_ids = [oid for oid in opp_ids if oid is not None]
-
-      mult = cfg.get("PROVISIONAL_CAP_MULTIPLIER", 2.5) if prov else 1.0
-      pairwise_cap = (
-          cfg.get(
-              "MAX_24H_PAIRWISE_EXCHANGE_CAP",
-              cfg.get("MAX_24H_EXCHANGE_CAP", 0.1500),
-          )
-          * mult
-      )
-      global_cap = cfg.get("MAX_24H_GLOBAL_CASUAL_CAP", 0.2500) * mult
-
-      prior_pairwise = cls.get_rolling_24h_pairwise_delta(
-          p["player_id"], opp_ids, effective_match_ts, conn
-      )
-      prior_global = cls.get_rolling_24h_global_delta(
-          p["player_id"], effective_match_ts, conn
-      )
-      cum_session_delta = (
-          cumulative_deltas.get(p["player_id"], 0.0)
-          if cumulative_deltas is not None
-          else 0.0
-      )
-
-      is_elevator_active = (
-          prov
-          and won
-          and not is_draw
-          and (raw_d > pairwise_cap)
-          and (s_margin >= 1.00 or (g_w_raw >= 2 * g_l_raw and g_w_raw >= 4))
-          and (opp_team_r >= r_eval - 0.50)
-      )
-
-      if is_elevator_active and bool(
-          cfg.get("PROVISIONAL_BYPASS_EXCHANGE_CAP", 1)
-      ):
-        max_allowed = cfg.get("MAX_PROVISIONAL_DELTA", 0.750)
-        final_d = min(max_allowed, max(0.0005, raw_d))
-        flags.append("PROVISIONAL_CAP_BYPASS")
-        if final_d >= 0.500:
-          flags.append("[ALERT_SMURF_RIGHTSIZING_SURGE]")
-      elif is_tournament and bool(cfg.get("TOURNAMENT_MULTIPLIER_ACTIVE", 1)):
-        t_mult = cfg.get("TOURNAMENT_STAKES_MULTIPLIER", 1.15)
-        final_d = raw_d * t_mult
-        flags.append(f"TOURNAMENT ({t_mult}x, Uncapped)")
-      elif session_id and session_checked_in >= cfg.get(
-          "MIN_SESSION_PLAYERS", 6
-      ):
-        sess_cap = cfg.get("SESSION_EXCHANGE_CAP", 0.300) * mult
-        target_cum = cum_session_delta + raw_d
-        capped_target = max(-sess_cap, min(sess_cap, target_cum))
-        final_d = capped_target - cum_session_delta
-        if abs(target_cum) > sess_cap:
-          flags.append("SESSION_CUMULATIVE_CAP_ENFORCED")
-      else:
-        if raw_d >= 0.0:
-          headroom_pairwise = max(
-              0.0,
-              pairwise_cap - max(0.0, prior_pairwise + cum_session_delta),
-          )
-          headroom_global = max(
-              0.0, global_cap - max(0.0, prior_global + cum_session_delta)
-          )
-          active_headroom = min(headroom_pairwise, headroom_global)
-
-          if raw_d > active_headroom:
-            final_d = max(0.0005, active_headroom)
-            flags.append("CAP_ENFORCED")
-            if active_headroom == headroom_pairwise:
-              flags.append("[ALERT_PAIRWISE_CAP_CLAMPED]")
             else:
-              flags.append("[ALERT_GLOBAL_CASUAL_CAP_CLAMPED]")
-          else:
-            final_d = raw_d
-        else:
-          lossroom_pairwise = min(
-              0.0,
-              -pairwise_cap - min(0.0, prior_pairwise + cum_session_delta),
-          )
-          lossroom_global = min(
-              0.0, -global_cap - min(0.0, prior_global + cum_session_delta)
-          )
-          active_lossroom = max(lossroom_pairwise, lossroom_global)
+                w_rightsize = 0.0
 
-          if raw_d < active_lossroom:
-            final_d = active_lossroom
-            flags.append("CAP_ENFORCED")
-            if active_lossroom == lossroom_pairwise:
-              flags.append("[ALERT_PAIRWISE_CAP_CLAMPED]")
-            else:
-              flags.append("[ALERT_GLOBAL_CASUAL_CAP_CLAMPED]")
-          else:
-            final_d = raw_d
-
-      new_r = max(0.000, min(6.999, r + final_d))
-      c_loss = int(p.get("consecutive_losses", 0))
-      pre_disp = float(p.get("display_rating", r))
-
-      if final_d < 0:
-        if c_loss < 3 and (
-            pre_disp - new_r
-            <= cfg.get("DISPLAY_RATING_SOFT_FLOOR", 0.050)
-        ):
-          new_disp = pre_disp
-          flags.append("[ALERT_SOFT_FLOOR_DECOUPLING_ACTIVE]")
-        else:
-          new_disp = new_r
-          if pre_disp - new_r > 0.150:
-            flags.append("[ALERT_SOFT_FLOOR_DECOUPLING_MAX]")
-      else:
-        new_disp = new_r
-
-      new_c_loss = 0 if (won or is_draw) else c_loss + 1
-      if g_w_raw == 0 and not won and not is_draw:
-        new_rd = rd
-        flags.append("[ALERT_ZERO_RESISTANCE_RD_FREEZE]")
-      else:
-        raw_new_rd = max(
-            30.0,
-            math.sqrt(
-                1.0
-                / (
-                    1.0 / (rd**2)
-                    + (mc * s_margin * (g_opp**2) * omega) / (sig**2)
+            if is_quar:
+                raw_d = 0.000
+                flags.append("[ALERT_QUARANTINE_ISOLATION_ACTIVE]")
+            elif is_draw:
+                raw_d = standard_einstein_delta
+                flags.append("DRAW_PARITY_EXCHANGE")
+            elif won:
+                actual_game_ratio = (g_w_raw + 0.5) / (g_l_raw + 0.5)
+                r_perf_team = opp_team_r + cfg.get("LOGISTIC_BETA", 2.0) * math.log10(
+                    actual_game_ratio
                 )
-            ),
-        )
-        new_rd = rd - (
-            (rd - raw_new_rd)
-            * (
-                cfg.get("PROVISIONAL_RD_CONTRACTION_RATIO", 0.20)
-                if prov
-                else 1.0
-            )
-        )
 
-      past_opps = conn.execute(
-          """
+                if w_rightsize > 0.0:
+                    raw_pr_delta = (
+                        (r_perf_team - r_eval)
+                        * cfg.get("PROVISIONAL_ABSORPTION_ALPHA", 0.45)
+                        * mc
+                        * g_opp
+                    )
+                    max_d = cfg.get("MAX_PROVISIONAL_DELTA", 0.750)
+
+                    if r_perf_team >= r_eval:
+                        bounded_interp = min(max_d, max(0.0005, raw_pr_delta))
+                    else:
+                        bounded_interp = max(0.0005, standard_einstein_delta)
+                        flags.append("[ALERT_RIGHTSIZING_WIN_NON_NEGATIVE_FLOOR]")
+
+                    raw_d = (1.0 - w_rightsize) * max(
+                        0.0005, standard_einstein_delta
+                    ) + (w_rightsize * bounded_interp)
+                    raw_d = max(0.0005, raw_d)
+
+                    if prov:
+                        flags.append("RIGHTSIZING_INTERPOLATION")
+                    else:
+                        flags.append(
+                            f"ACCURACY_TAPERED_RIGHTSIZING ({int(w_rightsize*100)}%)"
+                        )
+                else:
+                    raw_d = max(0.0005, standard_einstein_delta)
+
+                if (
+                    not is_singles
+                    and partner
+                    and partner_gap >= 1.500
+                    and r_eval > float(partner["snapshot_mmr"])
+                ):
+                    raw_d = max(0.0050, raw_d)
+                    flags.append("[ALERT_ANCHOR_CARRY_WIN_SHIELD]")
+
+            else:
+                tot_games = g_w_raw + g_l_raw
+                game_win_share = (g_l_raw / tot_games) if tot_games > 0 else 0.0
+
+                allow_discovery = bool(cfg.get("ALLOW_UNDERDOG_LOSS_DISCOVERY", 1.0))
+                min_game_share = float(cfg.get("UNDERDOG_LOSS_MIN_GAME_SHARE", 0.400))
+                min_opp_gap = float(cfg.get("UNDERDOG_LOSS_MIN_RATING_GAP", 1.000))
+                max_discovery_delta = float(cfg.get("UNDERDOG_LOSS_MAX_DELTA", 0.0300))
+
+                actual_game_ratio = (g_l_raw + 0.5) / (g_w_raw + 0.5)
+                r_perf_team = opp_team_r + cfg.get("LOGISTIC_BETA", 2.0) * math.log10(
+                    actual_game_ratio
+                )
+                opp_gap = opp_team_r - r_eval
+
+                is_underdog_discovery_eligible = (
+                    allow_discovery
+                    and (game_win_share >= min_game_share)
+                    and (opp_gap >= min_opp_gap)
+                    and (w_rightsize > 0.0)
+                )
+
+                if is_underdog_discovery_eligible:
+                    raw_discovery = (r_perf_team - r_eval) * 0.10 * mc * g_opp
+                    raw_d = min(max_discovery_delta, max(0.0050, raw_discovery))
+                    flags.append("[ALERT_UNDERDOG_DEFEAT_MICRO_DISCOVERY]")
+                else:
+                    if w_rightsize > 0.0:
+                        if r_perf_team > r_eval:
+                            bounded_loss = 0.0000
+                            flags.append("[ALERT_LOSS_NON_POSITIVITY_CLAMP]")
+                        else:
+                            raw_pr_delta = (
+                                (r_perf_team - r_eval)
+                                * cfg.get("PROVISIONAL_ABSORPTION_ALPHA", 0.45)
+                                * mc
+                                * g_opp
+                            )
+                            max_d = cfg.get("MAX_PROVISIONAL_DELTA", 0.750)
+                            bounded_loss = max(-max_d, min(0.0, raw_pr_delta))
+
+                        raw_d = (1.0 - w_rightsize) * min(
+                            0.0000, standard_einstein_delta
+                        ) + (w_rightsize * bounded_loss)
+                        raw_d = min(0.0000, raw_d)
+
+                        if prov:
+                            flags.append("RIGHTSIZING_INTERPOLATION")
+                        else:
+                            flags.append(
+                                f"ACCURACY_TAPERED_RIGHTSIZING ({int(w_rightsize*100)}%)"
+                            )
+                    else:
+                        raw_d = min(0.0000, standard_einstein_delta)
+
+            # PARTNER DISPARITY & MUTUAL PROVISIONAL PARITY CLAMP
+            if not is_singles and partner and not is_quar and not is_draw:
+                gap = abs(r_eval - float(partner["snapshot_mmr"]))
+                part_prov = bool(partner.get("is_provisional", 1))
+                part_rd = float(
+                    partner.get(
+                        "effective_pre_rd", partner.get("rating_deviation", 350.0)
+                    )
+                )
+
+                max_prov_gap = float(cfg.get("MUTUAL_PROV_MAX_PARTNER_GAP", 1.500))
+                if prov and part_prov and rd > 200.0 and part_rd > 200.0:
+                    if gap <= max_prov_gap:
+                        flags.append("MUTUAL_PROV_EXEMPTION")
+                    else:
+                        flags.append("[ALERT_MUTUAL_PROV_EXTREME_GAP_OVERRIDE]")
+                        if won and r_eval < float(partner["snapshot_mmr"]):
+                            ac_m = (
+                                cfg.get("ANTI_CARRY_MULT_TIER_2", 0.25)
+                                if gap >= 2.50
+                                else cfg.get("ANTI_CARRY_MULT_TIER_1", 0.50)
+                            )
+                            raw_d *= ac_m
+                            flags.append(f"ANTI_CARRY ({int((1-ac_m)*100)}%)")
+                else:
+                    if not won and r_eval > float(partner["snapshot_mmr"]):
+                        dd = (
+                            cfg.get("ICE_OUT_MULT_TIER_2", 0.05)
+                            if gap >= cfg.get("ICE_OUT_GAP_TIER_2", 2.00)
+                            else (
+                                cfg.get("ICE_OUT_MULT_TIER_1", 0.20)
+                                if gap >= cfg.get("ICE_OUT_GAP_TIER_1", 1.50)
+                                else (0.50 if gap >= 1.0 else 1.00)
+                            )
+                        )
+                        raw_d *= dd
+                        if dd < 1.00:
+                            flags.append(
+                                f"[ALERT_ICE_OUT_ANCHOR_SHIELD] ({int((1-dd)*100)}%)"
+                            )
+                    elif won and r_eval < float(partner["snapshot_mmr"]):
+                        ac_m1 = cfg.get("ANTI_CARRY_MULT_TIER_1", 0.50)
+                        ac_gap1 = cfg.get("ANTI_CARRY_GAP_TIER_1", 1.75)
+                        dd = (
+                            cfg.get("ANTI_CARRY_MULT_TIER_2", 0.25)
+                            if gap >= cfg.get("ANTI_CARRY_GAP_TIER_2", 2.50)
+                            else (
+                                ac_m1
+                                if gap >= ac_gap1
+                                else (0.75 if gap >= 1.2 else 1.00)
+                            )
+                        )
+                        raw_d *= dd
+                        if dd < 1.00:
+                            flags.append(f"ANTI_CARRY ({int((1-dd)*100)}%)")
+                        if not prov:
+                            raw_d = max(0.0010, raw_d)
+
+            m_played = int(p.get("verified_matches_count", 0))
+            w_g = 1.0
+            min_opp_target = float(cfg.get("GRAPH_DAMPENING_MIN_OPPONENTS", 5.0))
+            centrality_target = float(cfg.get("GRAPH_CENTRALITY_TARGET", 0.200))
+            if m_played >= 5:
+                w_g = min(
+                    1.0,
+                    float(p.get("graph_centrality", 0.20)) / centrality_target,
+                ) * min(
+                    1.0,
+                    float(p.get("unique_opponents_count", 0)) / min_opp_target,
+                )
+
+            if w_g < 1.0 and not is_quar and not prov:
+                raw_d *= w_g
+                flags.append(f"[ALERT_DISCONNECTED_GRAPH_DAMPENING] ({w_g:.2f}x)")
+
+            opp_ids = (
+                [p3["player_id"], p4["player_id"]]
+                if is_a
+                else [p1["player_id"], p2["player_id"]]
+            )
+            opp_ids = [oid for oid in opp_ids if oid is not None]
+
+            mult = cfg.get("PROVISIONAL_CAP_MULTIPLIER", 2.5) if prov else 1.0
+            pairwise_cap = (
+                cfg.get(
+                    "MAX_24H_PAIRWISE_EXCHANGE_CAP",
+                    cfg.get("MAX_24H_EXCHANGE_CAP", 0.1500),
+                )
+                * mult
+            )
+            global_cap = cfg.get("MAX_24H_GLOBAL_CASUAL_CAP", 0.2500) * mult
+
+            prior_pairwise = cls.get_rolling_24h_pairwise_delta(
+                p["player_id"], opp_ids, effective_match_ts, conn
+            )
+            prior_global = cls.get_rolling_24h_global_delta(
+                p["player_id"], effective_match_ts, conn
+            )
+            cum_session_delta = (
+                cumulative_deltas.get(p["player_id"], 0.0)
+                if cumulative_deltas is not None
+                else 0.0
+            )
+
+            is_elevator_active = (
+                prov
+                and won
+                and not is_draw
+                and (raw_d > pairwise_cap)
+                and (s_margin >= 1.00 or (g_w_raw >= 2 * g_l_raw and g_w_raw >= 4))
+                and (opp_team_r >= r_eval - 0.50)
+            )
+
+            if is_elevator_active and bool(
+                cfg.get("PROVISIONAL_BYPASS_EXCHANGE_CAP", 1)
+            ):
+                max_allowed = cfg.get("MAX_PROVISIONAL_DELTA", 0.750)
+                final_d = min(max_allowed, max(0.0005, raw_d))
+                flags.append("PROVISIONAL_CAP_BYPASS")
+                if final_d >= 0.500:
+                    flags.append("[ALERT_SMURF_RIGHTSIZING_SURGE]")
+            elif is_tournament and bool(cfg.get("TOURNAMENT_MULTIPLIER_ACTIVE", 1)):
+                t_mult = cfg.get("TOURNAMENT_STAKES_MULTIPLIER", 1.15)
+                final_d = raw_d * t_mult
+                flags.append(f"TOURNAMENT ({t_mult}x, Uncapped)")
+            elif session_id and session_checked_in >= cfg.get(
+                "MIN_SESSION_PLAYERS", 6
+            ):
+                sess_cap = cfg.get("SESSION_EXCHANGE_CAP", 0.300) * mult
+                target_cum = cum_session_delta + raw_d
+                capped_target = max(-sess_cap, min(sess_cap, target_cum))
+                final_d = capped_target - cum_session_delta
+                if abs(target_cum) > sess_cap:
+                    flags.append("SESSION_CUMULATIVE_CAP_ENFORCED")
+            else:
+                if raw_d >= 0.0:
+                    headroom_pairwise = max(
+                        0.0,
+                        pairwise_cap - max(0.0, prior_pairwise + cum_session_delta),
+                    )
+                    headroom_global = max(
+                        0.0, global_cap - max(0.0, prior_global + cum_session_delta)
+                    )
+                    active_headroom = min(headroom_pairwise, headroom_global)
+
+                    if raw_d > active_headroom:
+                        final_d = max(0.0005, active_headroom)
+                        flags.append("CAP_ENFORCED")
+                        if active_headroom == headroom_pairwise:
+                            flags.append("[ALERT_PAIRWISE_CAP_CLAMPED]")
+                        else:
+                            flags.append("[ALERT_GLOBAL_CASUAL_CAP_CLAMPED]")
+                    else:
+                        final_d = raw_d
+                else:
+                    lossroom_pairwise = min(
+                        0.0,
+                        -pairwise_cap - min(0.0, prior_pairwise + cum_session_delta),
+                    )
+                    lossroom_global = min(
+                        0.0, -global_cap - min(0.0, prior_global + cum_session_delta)
+                    )
+                    active_lossroom = max(lossroom_pairwise, lossroom_global)
+
+                    if raw_d < active_lossroom:
+                        final_d = active_lossroom
+                        flags.append("CAP_ENFORCED")
+                        if active_lossroom == lossroom_pairwise:
+                            flags.append("[ALERT_PAIRWISE_CAP_CLAMPED]")
+                        else:
+                            flags.append("[ALERT_GLOBAL_CASUAL_CAP_CLAMPED]")
+                    else:
+                        final_d = raw_d
+
+            new_r = max(0.000, min(6.999, r + final_d))
+            c_loss = int(p.get("consecutive_losses", 0))
+            pre_disp = float(p.get("display_rating", r))
+
+            if final_d < 0:
+                if c_loss < 3 and (
+                    pre_disp - new_r
+                    <= cfg.get("DISPLAY_RATING_SOFT_FLOOR", 0.050)
+                ):
+                    new_disp = pre_disp
+                    flags.append("[ALERT_SOFT_FLOOR_DECOUPLING_ACTIVE]")
+                else:
+                    new_disp = new_r
+                    if pre_disp - new_r > 0.150:
+                        flags.append("[ALERT_SOFT_FLOOR_DECOUPLING_MAX]")
+            else:
+                new_disp = new_r
+
+            new_c_loss = 0 if (won or is_draw) else c_loss + 1
+            if g_w_raw == 0 and not won and not is_draw:
+                new_rd = rd
+                flags.append("[ALERT_ZERO_RESISTANCE_RD_FREEZE]")
+            else:
+                raw_new_rd = max(
+                    30.0,
+                    math.sqrt(
+                        1.0
+                        / (
+                            1.0 / (rd**2)
+                            + (mc * s_margin * (g_opp**2) * omega) / (sig**2)
+                        )
+                    ),
+                )
+                new_rd = rd - (
+                    (rd - raw_new_rd)
+                    * (
+                        cfg.get("PROVISIONAL_RD_CONTRACTION_RATIO", 0.20)
+                        if prov
+                        else 1.0
+                    )
+                )
+
+            past_opps = conn.execute(
+                """
                 SELECT DISTINCT opp_id FROM (
                     SELECT team_b_p1_id as opp_id FROM matches WHERE team_a_p1_id = ? OR team_a_p2_id = ? UNION
                     SELECT team_b_p2_id as opp_id FROM matches WHERE (team_a_p1_id = ? OR team_a_p2_id = ?) AND team_b_p2_id IS NOT NULL UNION
                     SELECT team_a_p1_id as opp_id FROM matches WHERE team_b_p1_id = ? OR team_b_p2_id = ? UNION
                     SELECT team_a_p2_id as opp_id FROM matches WHERE (team_b_p1_id = ? OR team_b_p2_id = ?) AND team_a_p2_id IS NOT NULL
                 ) WHERE opp_id IS NOT NULL
-            """,
-          (
-              p["player_id"],
-              p["player_id"],
-              p["player_id"],
-              p["player_id"],
-              p["player_id"],
-              p["player_id"],
-              p["player_id"],
-              p["player_id"],
-          ),
-      ).fetchall()
-      past_opp_set = {row[0] for row in past_opps}
-      new_opps_in_match = sum(1 for oid in opp_ids if oid not in past_opp_set)
+                """,
+                (
+                    p["player_id"], p["player_id"], p["player_id"], p["player_id"],
+                    p["player_id"], p["player_id"], p["player_id"], p["player_id"],
+                ),
+            ).fetchall()
+            past_opp_set = {row[0] for row in past_opps}
+            new_opps_in_match = sum(1 for oid in opp_ids if oid not in past_opp_set)
 
-      projected_m = m_played + 1
-      projected_opps = (
-          int(p.get("unique_opponents_count", 0)) + new_opps_in_match
-      )
+            projected_m = m_played + 1
+            projected_opps = (
+                int(p.get("unique_opponents_count", 0)) + new_opps_in_match
+            )
 
-      k_c_bridges = int(p.get("bridge_matches_count", 0)) + (
-          1 if is_city_bridge else 0
-      )
-      k_co_bridges = int(p.get("is_country_bridge", 0)) + (
-          1 if is_country_bridge else 0
-      )
+            k_c_bridges = int(p.get("bridge_matches_count", 0)) + (
+                1 if is_city_bridge else 0
+            )
+            k_co_bridges = int(p.get("is_country_bridge", 0)) + (
+                1 if is_country_bridge else 0
+            )
 
-      min_m = int(cfg.get("PROVISIONAL_MIN_MATCHES", 10))
-      min_o = int(cfg.get("PROVISIONAL_MIN_OPPONENTS", 8))
-      rd_gate = float(cfg.get("PROVISIONAL_RD_GATE", 100.0))
+            min_m = int(cfg.get("PROVISIONAL_MIN_MATCHES", 10))
+            min_o = int(cfg.get("PROVISIONAL_MIN_OPPONENTS", 8))
+            rd_gate = float(cfg.get("PROVISIONAL_RD_GATE", 100.0))
 
-      tri_gate_passed = (
-          new_rd <= rd_gate
-          and projected_m >= min_m
-          and projected_opps >= min_o
-      )
-      new_prov = 0 if (tri_gate_passed or is_manual_override) else 1
+            tri_gate_passed = (
+                new_rd <= rd_gate
+                and projected_m >= min_m
+                and projected_opps >= min_o
+            )
+            new_prov = 0 if (tri_gate_passed or is_manual_override) else 1
 
-      acc_comp, a_rd, a_m, a_d = cls.calc_accuracy(
-          new_rd,
-          projected_m,
-          projected_opps,
-          new_prov,
-          k_c_bridges,
-          k_co_bridges,
-          cfg,
-      )
+            acc_comp, a_rd, a_m, a_d = cls.calc_accuracy(
+                new_rd,
+                projected_m,
+                projected_opps,
+                new_prov,
+                k_c_bridges,
+                k_co_bridges,
+                cfg,
+            )
 
-      is_sys_anc = bool(p.get("is_anchor", 0) == 1)
-      if new_prov == 1:
-        tier = "PROVISIONAL"
-      elif is_sys_anc:
-        tier = "ANCHOR"
-      else:
-        tier = "VERIFIED"
+            is_sys_anc = bool(p.get("is_anchor", 0) == 1)
+            if new_prov == 1:
+                tier = "PROVISIONAL"
+            elif is_sys_anc:
+                tier = "ANCHOR"
+            else:
+                tier = "VERIFIED"
 
-      res.append({
-          "pid": p["player_id"],
-          "name": format_pr_name(
-              p.get("display_name", "Unknown"), prov
-          ),
-          "raw_name": p.get("display_name", "Unknown"),
-          "gender": p.get("gender", "MALE"),
-          "pre_r": r,
-          "post_r": new_r,
-          "pre_disp": pre_disp,
-          "post_disp": new_disp,
-          "delta": final_d,
-          "stored_pre_rd": float(p.get("rating_deviation", 350.0)),
-          "pre_rd": rd,
-          "post_rd": new_rd,
-          "pre_acc": p_acc,
-          "acc": acc_comp,
-          "pre_tier": p.get("calibration_tier", "PROVISIONAL"),
-          "tier": tier,
-          "a_rd": a_rd,
-          "a_m": a_m,
-          "a_d": a_d,
-          "prov": new_prov,
-          "c_loss": new_c_loss,
-          "flags": flags,
-      })
+            res.append({
+                "pid": p["player_id"],
+                "name": format_pr_name(
+                    p.get("display_name", "Unknown"), prov
+                ),
+                "raw_name": p.get("display_name", "Unknown"),
+                "gender": p.get("gender", "MALE"),
+                "pre_r": r,
+                "post_r": new_r,
+                "pre_disp": pre_disp,
+                "post_disp": new_disp,
+                "delta": final_d,
+                "stored_pre_rd": float(p.get("rating_deviation", 350.0)),
+                "pre_rd": rd,
+                "post_rd": new_rd,
+                "pre_acc": p_acc,
+                "acc": acc_comp,
+                "pre_tier": p.get("calibration_tier", "PROVISIONAL"),
+                "tier": tier,
+                "a_rd": a_rd,
+                "a_m": a_m,
+                "a_d": a_d,
+                "prov": new_prov,
+                "c_loss": new_c_loss,
+                "flags": flags,
+            })
 
-    if owns:
-      conn.close()
-    return {
-        "ta_r": ta_r,
-        "tb_r": tb_r,
-        "ea": ea,
-        "mov": s_margin,
-        "applied_m_c": mc,
-        "is_venue_bridge": is_venue_bridge,
-        "is_city_bridge": is_city_bridge,
-        "is_country_bridge": is_country_bridge,
-        "res": res,
-    }
-
-
+        if owns:
+            conn.close()
+        return {
+            "ta_r": ta_r,
+            "tb_r": tb_r,
+            "ea": ea,
+            "mov": s_margin,
+            "applied_m_c": mc,
+            "is_venue_bridge": is_venue_bridge,
+            "is_city_bridge": is_city_bridge,
+            "is_country_bridge": is_country_bridge,
+            "res": res,
+        }
+# ==============================================================================
+# 3. SESSION SCHEDULING ENGINE
+# ==============================================================================
 class SessionLogicEngine:
 
-  @staticmethod
-  def generate_schedule(
-      team_format,
-      match_mode,
-      enrolled_pids,
-      teams_created,
-      court_picks,
-      rounds_count,
-  ):
-    fixtures, fixture_order, num_courts = [], 1, max(1, len(court_picks))
-    if team_format == "FIXED_TEAMS":
-      t_list = [dict(t) for t in teams_created]
-      if len(t_list) % 2 != 0:
-        t_list.append({"p1": None, "p2": None, "is_bye": True})
-      for r_cycle in range(int(rounds_count)):
-        for r_idx in range(len(t_list) - 1):
-          round_num = (r_cycle * (len(t_list) - 1)) + (r_idx + 1)
-          round_pairings = [
-              (t_list[i], t_list[len(t_list) - 1 - i])
-              for i in range(len(t_list) // 2)
-              if not t_list[i].get("is_bye")
-              and not t_list[len(t_list) - 1 - i].get("is_bye")
-          ]
-          for m_idx, (ta, tb) in enumerate(round_pairings):
+    @staticmethod
+    def generate_schedule(
+        team_format,
+        match_mode,
+        enrolled_pids,
+        teams_created,
+        court_picks,
+        rounds_count,
+    ):
+        fixtures, fixture_order, num_courts = [], 1, max(1, len(court_picks))
+        if team_format == "FIXED_TEAMS":
+            t_list = [dict(t) for t in teams_created]
+            if len(t_list) % 2 != 0:
+                t_list.append({"p1": None, "p2": None, "is_bye": True})
+            for r_cycle in range(int(rounds_count)):
+                for r_idx in range(len(t_list) - 1):
+                    round_num = (r_cycle * (len(t_list) - 1)) + (r_idx + 1)
+                    round_pairings = [
+                        (t_list[i], t_list[len(t_list) - 1 - i])
+                        for i in range(len(t_list) // 2)
+                        if not t_list[i].get("is_bye")
+                        and not t_list[len(t_list) - 1 - i].get("is_bye")
+                    ]
+                    for m_idx, (ta, tb) in enumerate(round_pairings):
+                        fixtures.append({
+                            "round_number": round_num,
+                            "court_id": court_picks[m_idx % num_courts],
+                            "match_order": fixture_order,
+                            "team_a_p1_id": ta["p1"],
+                            "team_a_p2_id": ta["p2"],
+                            "team_b_p1_id": tb["p1"],
+                            "team_b_p2_id": tb["p2"],
+                            "group_id": "A",
+                        })
+                        fixture_order += 1
+                    t_list = [t_list[0]] + [t_list[-1]] + t_list[1:-1]
+        elif team_format == "ROTATING_TEAMS" and match_mode == "DOUBLES":
+            n_players = len(enrolled_pids)
+            if n_players < 4:
+                return []
+            matches_played = {p: 0 for p in enrolled_pids}
+            sat_out_last = {p: False for p in enrolled_pids}
+            partner_matrix = {
+                p1: {p2: 0 for p2 in enrolled_pids} for p1 in enrolled_pids
+            }
+            max_courts = max(1, min(num_courts, n_players // 4))
+
+            for round_num in range(1, int(rounds_count) + 1):
+                sorted_pids = sorted(
+                    enrolled_pids,
+                    key=lambda pid: (
+                        0 if sat_out_last[pid] else 1,
+                        matches_played[pid],
+                        pid,
+                    ),
+                )
+                active_players = sorted_pids[: (max_courts * 4)]
+                for p in enrolled_pids:
+                    sat_out_last[p] = p not in active_players
+                    if p in active_players:
+                        matches_played[p] += 1
+                court_pool = list(active_players)
+                for c_idx in range(max_courts):
+                    if len(court_pool) < 4:
+                        break
+                    m_players, court_pool = court_pool[:4], court_pool[4:]
+                    combos = [
+                        (
+                            (m_players[0], m_players[1]),
+                            (m_players[2], m_players[3]),
+                        ),
+                        (
+                            (m_players[0], m_players[2]),
+                            (m_players[1], m_players[3]),
+                        ),
+                        (
+                            (m_players[0], m_players[3]),
+                            (m_players[1], m_players[2]),
+                        ),
+                    ]
+                    (ta_p1, ta_p2), (tb_p1, tb_p2) = min(
+                        combos,
+                        key=lambda c: partner_matrix[c[0][0]][c[0][1]]
+                        + partner_matrix[c[1][0]][c[1][1]],
+                    )
+                    partner_matrix[ta_p1][ta_p2] += 1
+                    partner_matrix[ta_p2][ta_p1] += 1
+                    partner_matrix[tb_p1][tb_p2] += 1
+                    partner_matrix[tb_p2][tb_p1] += 1
+                    fixtures.append({
+                        "round_number": round_num,
+                        "court_id": court_picks[c_idx % num_courts],
+                        "match_order": fixture_order,
+                        "team_a_p1_id": ta_p1,
+                        "team_a_p2_id": ta_p2,
+                        "team_b_p1_id": tb_p1,
+                        "team_b_p2_id": tb_p2,
+                        "group_id": "A",
+                    })
+                    fixture_order += 1
+        return fixtures
+
+    @staticmethod
+    def generate_mexicano_round(
+        standings_sorted_pids, court_picks, current_round, start_match_order
+    ):
+        fixtures = []
+        fixture_order = start_match_order
+        num_courts = max(1, len(court_picks))
+        max_courts = max(1, min(num_courts, len(standings_sorted_pids) // 4))
+        court_pool = list(standings_sorted_pids[: (max_courts * 4)])
+
+        for c_idx in range(max_courts):
+            if len(court_pool) < 4:
+                break
+            m_players, court_pool = court_pool[:4], court_pool[4:]
             fixtures.append({
-                "round_number": round_num,
-                "court_id": court_picks[m_idx % num_courts],
+                "round_number": current_round,
+                "court_id": court_picks[c_idx % num_courts],
                 "match_order": fixture_order,
-                "team_a_p1_id": ta["p1"],
-                "team_a_p2_id": ta["p2"],
-                "team_b_p1_id": tb["p1"],
-                "team_b_p2_id": tb["p2"],
+                "team_a_p1_id": m_players[0],
+                "team_a_p2_id": m_players[3],
+                "team_b_p1_id": m_players[1],
+                "team_b_p2_id": m_players[2],
                 "group_id": "A",
             })
             fixture_order += 1
-          t_list = [t_list[0]] + [t_list[-1]] + t_list[1:-1]
-    elif team_format == "ROTATING_TEAMS" and match_mode == "DOUBLES":
-      n_players = len(enrolled_pids)
-      if n_players < 4:
-        return []
-      matches_played = {p: 0 for p in enrolled_pids}
-      sat_out_last = {p: False for p in enrolled_pids}
-      partner_matrix = {
-          p1: {p2: 0 for p2 in enrolled_pids} for p1 in enrolled_pids
-      }
-      max_courts = max(1, min(num_courts, n_players // 4))
-
-      for round_num in range(1, int(rounds_count) + 1):
-        sorted_pids = sorted(
-            enrolled_pids,
-            key=lambda pid: (
-                0 if sat_out_last[pid] else 1,
-                matches_played[pid],
-                pid,
-            ),
-        )
-        active_players = sorted_pids[: (max_courts * 4)]
-        for p in enrolled_pids:
-          sat_out_last[p] = p not in active_players
-          if p in active_players:
-            matches_played[p] += 1
-        court_pool = list(active_players)
-        for c_idx in range(max_courts):
-          if len(court_pool) < 4:
-            break
-          m_players, court_pool = court_pool[:4], court_pool[4:]
-          combos = [
-              (
-                  (m_players[0], m_players[1]),
-                  (m_players[2], m_players[3]),
-              ),
-              (
-                  (m_players[0], m_players[2]),
-                  (m_players[1], m_players[3]),
-              ),
-              (
-                  (m_players[0], m_players[3]),
-                  (m_players[1], m_players[2]),
-              ),
-          ]
-          (ta_p1, ta_p2), (tb_p1, tb_p2) = min(
-              combos,
-              key=lambda c: partner_matrix[c[0][0]][c[0][1]]
-              + partner_matrix[c[1][0]][c[1][1]],
-          )
-          partner_matrix[ta_p1][ta_p2] += 1
-          partner_matrix[ta_p2][ta_p1] += 1
-          partner_matrix[tb_p1][tb_p2] += 1
-          partner_matrix[tb_p2][tb_p1] += 1
-          fixtures.append({
-              "round_number": round_num,
-              "court_id": court_picks[c_idx % num_courts],
-              "match_order": fixture_order,
-              "team_a_p1_id": ta_p1,
-              "team_a_p2_id": ta_p2,
-              "team_b_p1_id": tb_p1,
-              "team_b_p2_id": tb_p2,
-              "group_id": "A",
-          })
-          fixture_order += 1
-    return fixtures
+        return fixtures
 
 
 def format_match_scoreline(m):
-  try:
-    scores = json.loads(m.get("set_scores_json", "[]"))
-    if scores and isinstance(scores, list):
-      return ", ".join(f"{s[0]}-{s[1]}" for s in scores)
-  except Exception:
-    pass
-  return f"{m.get('score_team_a', 0)}-{m.get('score_team_b', 0)}"
+    try:
+        scores = json.loads(m.get("set_scores_json", "[]"))
+        if scores and isinstance(scores, list):
+            return ", ".join(f"{s[0]}-{s[1]}" for s in scores)
+    except Exception:
+        pass
+    return f"{m.get('score_team_a', 0)}-{m.get('score_team_b', 0)}"
 
 
 def build_pdf_document():
-  if not REPORTLAB_AVAILABLE:
-    return None
-  buf = io.BytesIO()
-  doc = SimpleDocTemplate(
-      buf,
-      pagesize=letter,
-      leftMargin=36,
-      rightMargin=36,
-      topMargin=48,
-      bottomMargin=48,
-  )
-  styles = getSampleStyleSheet()
-  title_style = ParagraphStyle(
-      "DocTitle",
-      fontName="Helvetica-Bold",
-      fontSize=18,
-      leading=22,
-      textColor=colors.HexColor("#0284c7"),
-      spaceAfter=4,
-  )
-  subtitle_style = ParagraphStyle(
-      "DocSub",
-      fontName="Helvetica-Bold",
-      fontSize=9,
-      leading=13,
-      textColor=colors.HexColor("#0f172a"),
-      spaceAfter=8,
-  )
-  h1_style = ParagraphStyle(
-      "SecH1",
-      fontName="Helvetica-Bold",
-      fontSize=11,
-      leading=15,
-      textColor=colors.HexColor("#0369a1"),
-      spaceBefore=14,
-      spaceAfter=6,
-      keepWithNext=True,
-  )
-  h2_style = ParagraphStyle(
-      "SecH2",
-      fontName="Helvetica-Bold",
-      fontSize=9,
-      leading=13,
-      textColor=colors.HexColor("#0f172a"),
-      spaceBefore=10,
-      spaceAfter=4,
-      keepWithNext=True,
-  )
-  body_style = ParagraphStyle(
-      "BodyDark",
-      fontName="Helvetica",
-      fontSize=7.6,
-      leading=11,
-      textColor=colors.HexColor("#1e293b"),
-      spaceAfter=5,
-  )
-  code_style = ParagraphStyle(
-      "CodeSnippet",
-      fontName="Courier",
-      fontSize=6.8,
-      leading=9,
-      textColor=colors.HexColor("#0369a1"),
-      backColor=colors.HexColor("#f8fafc"),
-      borderPadding=3,
-      spaceAfter=4,
-  )
-  th_style = ParagraphStyle(
-      "THStyle",
-      fontName="Helvetica-Bold",
-      fontSize=7,
-      leading=9,
-      textColor=colors.white,
-  )
-  td_style = ParagraphStyle(
-      "TDStyle",
-      fontName="Helvetica",
-      fontSize=6.6,
-      leading=8.5,
-      textColor=colors.HexColor("#0f172a"),
-  )
+    if not REPORTLAB_AVAILABLE:
+        return None
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=letter,
+        leftMargin=36,
+        rightMargin=36,
+        topMargin=48,
+        bottomMargin=48,
+    )
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "DocTitle",
+        fontName="Helvetica-Bold",
+        fontSize=18,
+        leading=22,
+        textColor=colors.HexColor("#0284c7"),
+        spaceAfter=4,
+    )
+    subtitle_style = ParagraphStyle(
+        "DocSub",
+        fontName="Helvetica-Bold",
+        fontSize=9,
+        leading=13,
+        textColor=colors.HexColor("#0f172a"),
+        spaceAfter=8,
+    )
+    h1_style = ParagraphStyle(
+        "SecH1",
+        fontName="Helvetica-Bold",
+        fontSize=11,
+        leading=15,
+        textColor=colors.HexColor("#0369a1"),
+        spaceBefore=14,
+        spaceAfter=6,
+        keepWithNext=True,
+    )
+    body_style = ParagraphStyle(
+        "BodyDark",
+        fontName="Helvetica",
+        fontSize=7.6,
+        leading=11,
+        textColor=colors.HexColor("#1e293b"),
+        spaceAfter=5,
+    )
+    th_style = ParagraphStyle(
+        "THStyle",
+        fontName="Helvetica-Bold",
+        fontSize=7,
+        leading=9,
+        textColor=colors.white,
+    )
+    td_style = ParagraphStyle(
+        "TDStyle",
+        fontName="Helvetica",
+        fontSize=6.6,
+        leading=8.5,
+        textColor=colors.HexColor("#0f172a"),
+    )
 
-  story = []
-  story.append(Paragraph("RYFT ENGINE PRIMARY V.16.4", title_style))
-  story.append(
-      Paragraph(
-          "Master Specification, Algorithmic Governance Matrix & System"
-          " Blueprint",
-          subtitle_style,
-      )
-  )
-  story.append(
-      Paragraph(
-          "Dual-Engine Architecture: Einstein (Micro Physics) & Hawking (Macro"
-          " Diffusion & Empirical Topology)",
-          body_style,
-      )
-  )
-  story.append(
-      HRFlowable(
-          width="100%",
-          thickness=1.5,
-          color=colors.HexColor("#0284c7"),
-          spaceAfter=10,
-      )
-  )
+    story = []
+    story.append(Paragraph("RYFT ENGINE PRIMARY V.16.4", title_style))
+    story.append(
+        Paragraph(
+            "Master Specification, Algorithmic Governance Matrix & System Blueprint",
+            subtitle_style,
+        )
+    )
+    story.append(
+        Paragraph(
+            "Dual-Engine Architecture: Einstein (Micro Physics) & Hawking (Macro Diffusion & Empirical Topology)",
+            body_style,
+        )
+    )
+    story.append(
+        HRFlowable(
+            width="100%",
+            thickness=1.5,
+            color=colors.HexColor("#0284c7"),
+            spaceAfter=10,
+        )
+    )
 
-  story.append(
-      Paragraph("SECTION 1: EXECUTIVE SUMMARY & TRUST BLUEPRINT", h1_style)
-  )
-  story.append(
-      Paragraph(
-          "The RYFT V.16.4 Engine is a continuous, deterministic rating"
-          " architecture designed for modern padel and pickleball. It"
-          " eliminates the systemic failures of legacy rating systems"
-          " (freeze-outs, unearned novice carry, smurfing, and private"
-          " collusion) through asymmetric responsibility modeling, performance"
-          " interpolation, and topological diffusion.",
-          body_style,
-      )
-  )
+    story.append(Paragraph("SECTION 1: EXECUTIVE SUMMARY & TRUST BLUEPRINT", h1_style))
+    story.append(
+        Paragraph(
+            "The RYFT V.16.4 Engine is a continuous, deterministic rating architecture designed for modern padel and pickleball. It eliminates the systemic failures of legacy rating systems (freeze-outs, unearned novice carry, smurfing, and private collusion) through asymmetric responsibility modeling, performance interpolation, and topological diffusion.",
+            body_style,
+        )
+    )
 
-  story.append(Spacer(1, 4))
-  story.append(Paragraph("SECTION 2: MASTER DATABASE SCHEMA", h1_style))
-  db_rows = [
-      [
-          Paragraph("Table Name", th_style),
-          Paragraph("Primary Key", th_style),
-          Paragraph("Architectural Role", th_style),
-      ],
-      [
-          Paragraph("players", td_style),
-          Paragraph("player_id (UUID)", td_style),
-          Paragraph(
-              "Master Player Profile (MMR, Peaks, Accuracy, Tier, Consecutive"
-              " Losses)",
-              td_style,
-          ),
-      ],
-      [
-          Paragraph("venues", td_style),
-          Paragraph("venue_id (UUID)", td_style),
-          Paragraph("Club Facilities & Bridge Counters", td_style),
-      ],
-      [
-          Paragraph("locations", td_style),
-          Paragraph("location_id (Code)", td_style),
-          Paragraph("Geospatial Hierarchy & Hawking Offsets", td_style),
-      ],
-      [
-          Paragraph("matches", td_style),
-          Paragraph("match_id (Code)", td_style),
-          Paragraph("Master Transaction Ledger (Deltas, Multipliers)", td_style),
-      ],
-      [
-          Paragraph("sessions", td_style),
-          Paragraph("session_id (Code)", td_style),
-          Paragraph("Multi-Match Session Workflows", td_style),
-      ],
-      [
-          Paragraph("global_config", td_style),
-          Paragraph("param_key", td_style),
-          Paragraph("Live Governance Registry", td_style),
-      ],
-  ]
-  t_db = Table(db_rows, colWidths=[100, 100, 250])
-  t_db.setStyle(
-      TableStyle([
-          ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
-          ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
-          ("VALIGN", (0, 0), (-1, -1), "TOP"),
-          (
-              "ROWBACKGROUNDS",
-              (0, 1),
-              (-1, -1),
-              [colors.white, colors.HexColor("#f8fafc")],
-          ),
-      ])
-  )
-  story.append(t_db)
+    story.append(Spacer(1, 4))
+    story.append(Paragraph("SECTION 2: MASTER DATABASE SCHEMA", h1_style))
+    db_rows = [
+        [
+            Paragraph("Table Name", th_style),
+            Paragraph("Primary Key", th_style),
+            Paragraph("Architectural Role", th_style),
+        ],
+        [
+            Paragraph("players", td_style),
+            Paragraph("player_id (UUID)", td_style),
+            Paragraph(
+                "Master Player Profile (MMR, Peaks, Accuracy, Tier, Consecutive Losses)",
+                td_style,
+            ),
+        ],
+        [
+            Paragraph("venues", td_style),
+            Paragraph("venue_id (UUID)", td_style),
+            Paragraph("Club Facilities & Bridge Counters", td_style),
+        ],
+        [
+            Paragraph("locations", td_style),
+            Paragraph("location_id (Code)", td_style),
+            Paragraph("Geospatial Hierarchy & Hawking Offsets", td_style),
+        ],
+        [
+            Paragraph("matches", td_style),
+            Paragraph("match_id (Code)", td_style),
+            Paragraph("Master Transaction Ledger (Deltas, Multipliers)", td_style),
+        ],
+        [
+            Paragraph("sessions", td_style),
+            Paragraph("session_id (Code)", td_style),
+            Paragraph("Multi-Match Session Workflows", td_style),
+        ],
+        [
+            Paragraph("global_config", td_style),
+            Paragraph("param_key", td_style),
+            Paragraph("Live Governance Registry", td_style),
+        ],
+    ]
+    t_db = Table(db_rows, colWidths=[100, 100, 250])
+    t_db.setStyle(
+        TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            (
+                "ROWBACKGROUNDS",
+                (0, 1),
+                (-1, -1),
+                [colors.white, colors.HexColor("#f8fafc")],
+            ),
+        ])
+    )
+    story.append(t_db)
 
-  doc.build(story)
-  buf.seek(0)
-  return buf.read()
+    doc.build(story)
+    buf.seek(0)
+    return buf.read()
 
 
 # ==============================================================================
@@ -3145,427 +2183,427 @@ nav = st.sidebar.radio(
 # 5. CONSOLE TAB ROUTING
 # ==============================================================================
 if nav == "📊 The Dashboard":
-  st.title("System Command Center & Macro Health")
-  st.markdown(f"#### `{format_ist_banner()}`")
-  conn = get_db_connection()
-  m1, m2, m3, m4, m5, m6 = st.columns(6)
-  n_players = conn.execute(
-      "SELECT COUNT(*) FROM players WHERE calibration_tier != 'INACTIVE'"
-  ).fetchone()[0]
-  n_matches = conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0]
-  n_sessions = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
-  n_venues = conn.execute(
-      "SELECT COUNT(*) FROM venues WHERE is_active = 1"
-  ).fetchone()[0]
-  n_cities = conn.execute(
-      "SELECT COUNT(*) FROM locations WHERE location_type = 'CITY'"
-  ).fetchone()[0]
-  n_countries = conn.execute(
-      "SELECT COUNT(*) FROM locations WHERE location_type = 'COUNTRY'"
-  ).fetchone()[0]
+    st.title("System Command Center & Macro Health")
+    st.markdown(f"#### `{format_ist_banner()}`")
+    conn = get_db_connection()
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    n_players = conn.execute(
+        "SELECT COUNT(*) FROM players WHERE calibration_tier != 'INACTIVE'"
+    ).fetchone()[0]
+    n_matches = conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0]
+    n_sessions = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+    n_venues = conn.execute(
+        "SELECT COUNT(*) FROM venues WHERE is_active = 1"
+    ).fetchone()[0]
+    n_cities = conn.execute(
+        "SELECT COUNT(*) FROM locations WHERE location_type = 'CITY'"
+    ).fetchone()[0]
+    n_countries = conn.execute(
+        "SELECT COUNT(*) FROM locations WHERE location_type = 'COUNTRY'"
+    ).fetchone()[0]
 
-  m1.metric("Active Players", n_players)
-  m2.metric("Matches", n_matches)
-  m3.metric("Sessions", n_sessions)
-  m4.metric("Venues", n_venues)
-  m5.metric("Cities", n_cities)
-  m6.metric("Countries", n_countries)
-  conn.close()
-  st.markdown("---")
+    m1.metric("Active Players", n_players)
+    m2.metric("Matches", n_matches)
+    m3.metric("Sessions", n_sessions)
+    m4.metric("Venues", n_venues)
+    m5.metric("Cities", n_cities)
+    m6.metric("Countries", n_countries)
+    conn.close()
+    st.markdown("---")
 
-  with st.expander("💾 Database Snapshot Backup & Restore", expanded=True):
-    st.info(
-        "🛡️ Full state backup captures all players, peak histories, venues,"
-        " cities, matches, Hawking offsets, and configurations."
-    )
-    col_b1, col_b2 = st.columns(2)
-    with col_b1:
-      st.markdown("#### 📥 Backup Database Snapshot")
-      if os.path.exists(DB_FILE):
-        try:
-          st.download_button(
-              "⬇️ Download Full System Snapshot (.db)",
-              data=export_db_bytes(),
-              file_name=(
-                  f"RYFT_V16_FullBackup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
-              ),
-              mime="application/x-sqlite3",
-              use_container_width=True,
-          )
-        except Exception as ex:
-          st.error(f"Error preparing snapshot: {ex}")
-    with col_b2:
-      st.markdown("#### 📤 Restore Saved State")
-      up_db = st.file_uploader(
-          "Select .db file", type=["db", "sqlite", "sqlite3"]
-      )
-      if up_db and st.button(
-          "🚨 Restore Entire System from File",
-          type="primary",
-          use_container_width=True,
-      ):
-        try:
-          restore_db_from_bytes(up_db.getbuffer())
-          st.success("✅ System State Successfully Restored!")
-          st.rerun()
-        except Exception as err:
-          st.error(f"Failed to restore database: {str(err)}")
+    with st.expander("💾 Database Snapshot Backup & Restore", expanded=True):
+        st.info(
+            "🛡️ Full state backup captures all players, peak histories, venues,"
+            " cities, matches, Hawking offsets, and configurations."
+        )
+        col_b1, col_b2 = st.columns(2)
+        with col_b1:
+            st.markdown("#### 📥 Backup Database Snapshot")
+            if os.path.exists(DB_FILE):
+                try:
+                    st.download_button(
+                        "⬇️ Download Full System Snapshot (.db)",
+                        data=export_db_bytes(),
+                        file_name=(
+                            f"RYFT_V16_FullBackup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+                        ),
+                        mime="application/x-sqlite3",
+                        use_container_width=True,
+                    )
+                except Exception as ex:
+                    st.error(f"Error preparing snapshot: {ex}")
+        with col_b2:
+            st.markdown("#### 📤 Restore Saved State")
+            up_db = st.file_uploader(
+                "Select .db file", type=["db", "sqlite", "sqlite3"]
+            )
+            if up_db and st.button(
+                "🚨 Restore Entire System from File",
+                type="primary",
+                use_container_width=True,
+            ):
+                try:
+                    restore_db_from_bytes(up_db.getbuffer())
+                    st.success("✅ System State Successfully Restored!")
+                    st.rerun()
+                except Exception as err:
+                    st.error(f"Failed to restore database: {str(err)}")
 
-  with st.expander("🚨 Advanced System Resets", expanded=False):
-    r_c1, r_c2, r_c3 = st.columns(3)
-    res_p = r_c1.checkbox("Reset All Players to Initial Rating")
-    res_m = r_c2.checkbox("Delete Match History")
-    res_n = r_c3.checkbox("💣 Clean Slate (Erase All Test Data)")
-    if st.button("Execute Checked Resets", type="secondary"):
-      conn = get_db_connection()
-      if res_n:
-        for tbl in [
-            "match_logs",
-            "matches",
-            "session_matches",
-            "session_rosters",
-            "tourney_matches",
-            "tournaments",
-            "sessions",
-            "players",
-            "venues",
-            "locations",
-            "global_config",
-        ]:
-          conn.execute(f"DELETE FROM {tbl};")
-        seed_factory_parameters(conn.cursor(), overwrite_existing=True)
-        st.warning("Database completely wiped & factory defaults restored.")
-      else:
-        if res_m:
-          conn.execute("DELETE FROM match_logs;")
-          conn.execute("DELETE FROM matches;")
-          conn.execute("DELETE FROM session_matches;")
-          conn.execute("DELETE FROM session_rosters;")
-          conn.execute("DELETE FROM sessions;")
-          conn.execute("DELETE FROM tourney_matches;")
-          conn.execute("DELETE FROM tournaments;")
-          st.warning("Match history erased.")
-        if res_p:
-          conn.execute("""UPDATE players SET 
-                            latent_mmr = initial_rating, display_rating = initial_rating, 
-                            rating_deviation = 350.0, verified_matches_count = 0, 
-                            unique_opponents_count = 0, rating_accuracy_pct = 0.0, 
-                            calibration_tier = 'PROVISIONAL', is_provisional = 1""")
-          st.warning("Player ratings reset.")
-      conn.commit()
-      conn.close()
-      st.rerun()
+    with st.expander("🚨 Advanced System Resets", expanded=False):
+        r_c1, r_c2, r_c3 = st.columns(3)
+        res_p = r_c1.checkbox("Reset All Players to Initial Rating")
+        res_m = r_c2.checkbox("Delete Match History")
+        res_n = r_c3.checkbox("💣 Clean Slate (Erase All Test Data)")
+        if st.button("Execute Checked Resets", type="secondary"):
+            conn = get_db_connection()
+            if res_n:
+                for tbl in [
+                    "match_logs",
+                    "matches",
+                    "session_matches",
+                    "session_rosters",
+                    "tourney_matches",
+                    "tournaments",
+                    "sessions",
+                    "players",
+                    "venues",
+                    "locations",
+                    "global_config",
+                ]:
+                    conn.execute(f"DELETE FROM {tbl};")
+                seed_factory_parameters(conn.cursor(), overwrite_existing=True)
+                st.warning("Database completely wiped & factory defaults restored.")
+            else:
+                if res_m:
+                    conn.execute("DELETE FROM match_logs;")
+                    conn.execute("DELETE FROM matches;")
+                    conn.execute("DELETE FROM session_matches;")
+                    conn.execute("DELETE FROM session_rosters;")
+                    conn.execute("DELETE FROM sessions;")
+                    conn.execute("DELETE FROM tourney_matches;")
+                    conn.execute("DELETE FROM tournaments;")
+                    st.warning("Match history erased.")
+                if res_p:
+                    conn.execute("""UPDATE players SET 
+                                    latent_mmr = initial_rating, display_rating = initial_rating, 
+                                    rating_deviation = 350.0, verified_matches_count = 0, 
+                                    unique_opponents_count = 0, rating_accuracy_pct = 0.0, 
+                                    calibration_tier = 'PROVISIONAL', is_provisional = 1""")
+                    st.warning("Player ratings reset.")
+            conn.commit()
+            conn.close()
+            st.rerun()
 
 elif nav == "🎾 Log Matches":
-  st.title("Log Matches & Real-Time Simulation Hub")
-  st.markdown(f"#### `{format_ist_banner()}`")
-  conn = get_db_connection()
-  venues = conn.execute("SELECT * FROM venues WHERE is_active = 1").fetchall()
-  players = conn.execute(
-      "SELECT * FROM players WHERE calibration_tier != 'INACTIVE' ORDER BY"
-      " display_name"
-  ).fetchall()
-  formats = conn.execute(
-      "SELECT * FROM match_formats WHERE is_active = 1 ORDER BY category,"
-      " mc_weight DESC, target_games, total_points"
-  ).fetchall()
-  conn.close()
+    st.title("Log Matches & Real-Time Simulation Hub")
+    st.markdown(f"#### `{format_ist_banner()}`")
+    conn = get_db_connection()
+    venues = conn.execute("SELECT * FROM venues WHERE is_active = 1").fetchall()
+    players = conn.execute(
+        "SELECT * FROM players WHERE calibration_tier != 'INACTIVE' ORDER BY"
+        " display_name"
+    ).fetchall()
+    formats = conn.execute(
+        "SELECT * FROM match_formats WHERE is_active = 1 ORDER BY category,"
+        " mc_weight DESC, target_games, total_points"
+    ).fetchall()
+    conn.close()
 
-  v_dict = {v["venue_name"]: dict(v) for v in venues}
-  p_dict = {
-      f"{format_pr_name(p['display_name'], p['is_provisional'])} (MMR:"
-      f" {p['latent_mmr']:.3f}, {p['gender']})": dict(p)
-      for p in players
-  }
-  f_dict = {f["format_name"]: dict(f) for f in formats}
-  fid_map = {f["format_id"]: dict(f) for f in formats}
+    v_dict = {v["venue_name"]: dict(v) for v in venues}
+    p_dict = {
+        f"{format_pr_name(p['display_name'], p['is_provisional'])} (MMR:"
+        f" {p['latent_mmr']:.3f}, {p['gender']})": dict(p)
+        for p in players
+    }
+    f_dict = {f["format_name"]: dict(f) for f in formats}
+    fid_map = {f["format_id"]: dict(f) for f in formats}
 
-  c_s1, c_s2, c_s3 = st.columns(3)
-  ist_now = get_current_ist_datetime()
-  match_date = c_s1.date_input("Match Date", value=ist_now.date())
-  match_time = c_s2.time_input("Match Time", value=ist_now.time())
-  ven_sel = c_s3.selectbox(
-      "Venue Facility",
-      list(v_dict.keys()) if v_dict else ["No Venues Registered"],
-  )
-
-  c_m1, c_m2, c_m3 = st.columns([1.5, 2, 1.5])
-  is_singles = (
-      c_m1.radio(
-          "Game Configuration", ["2v2 Doubles", "1v1 Singles"], horizontal=True
-      )
-      == "1v1 Singles"
-  )
-  fmt_sel = c_m2.selectbox(
-      "Official Scoring Format",
-      list(f_dict.keys()) if f_dict else ["No Formats Active"],
-  )
-  is_tourney = c_m3.checkbox(
-      "🏆 Tournament Match (Uncapped + Boost)", value=False
-  )
-
-  col_t1, col_t2 = st.columns(2)
-  with col_t1:
-    st.markdown("##### 🔵 Team A")
-    p1_pick = st.selectbox(
-        "Player A1 (Required)", ["-- Select --"] + list(p_dict.keys()), key="p1_sel"
-    )
-    if p1_pick != "-- Select --":
-      pm = p_dict[p1_pick]
-      st.caption(
-          f"**{format_pr_name(pm['display_name'], pm['is_provisional'])}**"
-          f" ({pm['gender']}) | Display: `{pm['display_rating']:.2f}` | LMMR:"
-          f" `{pm['latent_mmr']:.3f}` | Acc: `{pm['rating_accuracy_pct']:.1f}%`"
-          f" | RD: `{pm['rating_deviation']:.1f}`"
-      )
-    p2_pick = (
-        st.selectbox(
-            "Player A2 (Teammate)",
-            ["-- Select --"] + list(p_dict.keys()),
-            key="p2_sel",
-        )
-        if not is_singles
-        else "-- None --"
-    )
-    if not is_singles and p2_pick not in ("-- Select --", "-- None --"):
-      pm2 = p_dict[p2_pick]
-      st.caption(
-          f"**{format_pr_name(pm2['display_name'], pm2['is_provisional'])}**"
-          f" ({pm2['gender']}) | Display: `{pm2['display_rating']:.2f}` | LMMR:"
-          f" `{pm2['latent_mmr']:.3f}` | Acc:"
-          f" `{pm2['rating_accuracy_pct']:.1f}%` | RD:"
-          f" `{pm2['rating_deviation']:.1f}`"
-      )
-
-  with col_t2:
-    st.markdown("##### 🔴 Team B")
-    p3_pick = st.selectbox(
-        "Player B1 (Required)", ["-- Select --"] + list(p_dict.keys()), key="p3_sel"
-    )
-    if p3_pick != "-- Select --":
-      pm3 = p_dict[p3_pick]
-      st.caption(
-          f"**{format_pr_name(pm3['display_name'], pm3['is_provisional'])}**"
-          f" ({pm3['gender']}) | Display: `{pm3['display_rating']:.2f}` | LMMR:"
-          f" `{pm3['latent_mmr']:.3f}` | Acc:"
-          f" `{pm3['rating_accuracy_pct']:.1f}%` | RD:"
-          f" `{pm3['rating_deviation']:.1f}`"
-      )
-    p4_pick = (
-        st.selectbox(
-            "Player B2 (Teammate)",
-            ["-- Select --"] + list(p_dict.keys()),
-            key="p4_sel",
-        )
-        if not is_singles
-        else "-- None --"
-    )
-    if not is_singles and p4_pick not in ("-- Select --", "-- None --"):
-      pm4 = p_dict[p4_pick]
-      st.caption(
-          f"**{format_pr_name(pm4['display_name'], pm4['is_provisional'])}**"
-          f" ({pm4['gender']}) | Display: `{pm4['display_rating']:.2f}` | LMMR:"
-          f" `{pm4['latent_mmr']:.3f}` | Acc:"
-          f" `{pm4['rating_accuracy_pct']:.1f}%` | RD:"
-          f" `{pm4['rating_deviation']:.1f}`"
-      )
-
-  sel_f = f_dict[fmt_sel] if f_dict else None
-  sets_data, sa, sb, gw, gl = [], 0, 0, 0, 0
-
-  if sel_f:
-    cat = sel_f["category"]
-    if cat == "MULTI_SET":
-      is_b05 = sel_f["format_id"] == "STD_B05"
-      target_sets = 3 if is_b05 else 2
-
-      s1_c1, s1_c2 = st.columns(2)
-      s1a = s1_c1.number_input("Set 1: Team A", 0, 7, 6, key="s1a")
-      s1b = s1_c2.number_input("Set 1: Team B", 0, 7, 3, key="s1b")
-      sets_data.append((s1a, s1b))
-      s2_c1, s2_c2 = st.columns(2)
-      s2a = s2_c1.number_input("Set 2: Team A", 0, 7, 6, key="s2a")
-      s2b = s2_c2.number_input("Set 2: Team B", 0, 7, 4, key="s2b")
-      sets_data.append((s2a, s2b))
-
-      w_a = sum(1 for s in sets_data if s[0] > s[1])
-      w_b = sum(1 for s in sets_data if s[1] > s[0])
-
-      if max(w_a, w_b) < target_sets:
-        s3_c1, s3_c2 = st.columns(2)
-        s3a = s3_c1.number_input(
-            "Set 3: Team A", 0, 7, 6 if w_b > w_a else 3, key="s3a"
-        )
-        s3b = s3_c2.number_input(
-            "Set 3: Team B", 0, 7, 3 if w_b > w_a else 6, key="s3b"
-        )
-        sets_data.append((s3a, s3b))
-        w_a = sum(1 for s in sets_data if s[0] > s[1])
-        w_b = sum(1 for s in sets_data if s[1] > s[0])
-
-      if is_b05 and max(w_a, w_b) < target_sets:
-        s4_c1, s4_c2 = st.columns(2)
-        s4a = s4_c1.number_input(
-            "Set 4: Team A", 0, 7, 6 if w_b > w_a else 4, key="s4a"
-        )
-        s4b = s4_c2.number_input(
-            "Set 4: Team B", 0, 7, 4 if w_b > w_a else 6, key="s4b"
-        )
-        sets_data.append((s4a, s4b))
-        w_a = sum(1 for s in sets_data if s[0] > s[1])
-        w_b = sum(1 for s in sets_data if s[1] > s[0])
-
-      if is_b05 and max(w_a, w_b) < target_sets:
-        s5_c1, s5_c2 = st.columns(2)
-        s5a = s5_c1.number_input(
-            "Set 5: Team A", 0, 7, 6 if w_b > w_a else 4, key="s5a"
-        )
-        s5b = s5_c2.number_input(
-            "Set 5: Team B", 0, 7, 4 if w_b > w_a else 6, key="s5b"
-        )
-        sets_data.append((s5a, s5b))
-        w_a = sum(1 for s in sets_data if s[0] > s[1])
-        w_b = sum(1 for s in sets_data if s[1] > s[0])
-
-      sa, sb = w_a, w_b
-      gw, gl = sum(x[0] for x in sets_data), sum(x[1] for x in sets_data)
-
-    elif cat == "RACE_GAMES":
-      rg1, rg2 = st.columns(2)
-      tg = sel_f["target_games"] or 6
-      gw = rg1.number_input("Team A Games", 0, 30, tg)
-      gl = rg2.number_input("Team B Games", 0, 30, max(0, tg - 2))
-      sa, sb = gw, gl
-      sets_data.append((gw, gl))
-
-    elif cat in ("AMERICANO", "MEXICANO"):
-      tp = sel_f["total_points"] or 24
-      ap1, ap2 = st.columns(2)
-      sa = ap1.number_input("Team A Points", 0, tp, tp // 2)
-      sb = ap2.number_input("Team B Points", 0, tp, tp - (tp // 2))
-      gw, gl = sa, sb
-      sets_data.append((sa, sb))
-
-  btn_dry, btn_save = st.columns(2)
-  do_dry = btn_dry.button(
-      "🔬 Execute Dry Run Simulation", use_container_width=True
-  )
-  do_save = btn_save.button(
-      "💾 Commit Match to Database", type="primary", use_container_width=True
-  )
-
-  if do_dry or do_save:
-    is_valid_score, score_err = validate_format_score(
-        sel_f["format_id"], sets_data, gw, gl, sa, sb, fid_map
+    c_s1, c_s2, c_s3 = st.columns(3)
+    ist_now = get_current_ist_datetime()
+    match_date = c_s1.date_input("Match Date", value=ist_now.date())
+    match_time = c_s2.time_input("Match Time", value=ist_now.time())
+    ven_sel = c_s3.selectbox(
+        "Venue Facility",
+        list(v_dict.keys()) if v_dict else ["No Venues Registered"],
     )
 
-    if (
-        p1_pick == "-- Select --"
-        or p3_pick == "-- Select --"
-        or (not is_singles and (p2_pick == "-- Select --" or p4_pick == "-- Select --"))
-    ):
-      st.error("Assign all required roster slots.")
-    elif not is_valid_score:
-      st.error(f"❌ Invalid Scoreline: {score_err}")
-    else:
-      p1_obj, p3_obj = dict(p_dict[p1_pick]), dict(p_dict[p3_pick])
-      p2_obj = dict(p_dict[p2_pick]) if not is_singles else None
-      p4_obj = dict(p_dict[p4_pick]) if not is_singles else None
-      ven_obj = dict(v_dict[ven_sel])
-      match_ts_val = f"{match_date}T{match_time.strftime('%H:%M:%S')}Z"
+    c_m1, c_m2, c_m3 = st.columns([1.5, 2, 1.5])
+    is_singles = (
+        c_m1.radio(
+            "Game Configuration", ["2v2 Doubles", "1v1 Singles"], horizontal=True
+        )
+        == "1v1 Singles"
+    )
+    fmt_sel = c_m2.selectbox(
+        "Official Scoring Format",
+        list(f_dict.keys()) if f_dict else ["No Formats Active"],
+    )
+    is_tourney = c_m3.checkbox(
+        "🏆 Tournament Match (Uncapped + Boost)", value=False
+    )
 
-      sim_out = RyftV16.compute_match(
-          p1_obj,
-          p2_obj,
-          p3_obj,
-          p4_obj,
-          sa,
-          sb,
-          max(gw, gl),
-          min(gw, gl),
-          sel_f["format_id"],
-          ven_obj["venue_id"],
-          is_singles,
-          is_dry=do_dry,
-          is_tournament=is_tourney,
-          match_timestamp=match_ts_val,
-      )
-      st.success(
-          f"Match Executed! Team A Odds: {sim_out['ea']*100:.1f}% vs Team B:"
-          f" {(1-sim_out['ea'])*100:.1f}% | Margin: {sim_out['mov']:.4f}"
-      )
+    col_t1, col_t2 = st.columns(2)
+    with col_t1:
+        st.markdown("##### 🔵 Team A")
+        p1_pick = st.selectbox(
+            "Player A1 (Required)", ["-- Select --"] + list(p_dict.keys()), key="p1_sel"
+        )
+        if p1_pick != "-- Select --":
+            pm = p_dict[p1_pick]
+            st.caption(
+                f"**{format_pr_name(pm['display_name'], pm['is_provisional'])}**"
+                f" ({pm['gender']}) | Display: `{pm['display_rating']:.2f}` | LMMR:"
+                f" `{pm['latent_mmr']:.3f}` | Acc: `{pm['rating_accuracy_pct']:.1f}%`"
+                f" | RD: `{pm['rating_deviation']:.1f}`"
+            )
+        p2_pick = (
+            st.selectbox(
+                "Player A2 (Teammate)",
+                ["-- Select --"] + list(p_dict.keys()),
+                key="p2_sel",
+            )
+            if not is_singles
+            else "-- None --"
+        )
+        if not is_singles and p2_pick not in ("-- Select --", "-- None --"):
+            pm2 = p_dict[p2_pick]
+            st.caption(
+                f"**{format_pr_name(pm2['display_name'], pm2['is_provisional'])}**"
+                f" ({pm2['gender']}) | Display: `{pm2['display_rating']:.2f}` | LMMR:"
+                f" `{pm2['latent_mmr']:.3f}` | Acc:"
+                f" `{pm2['rating_accuracy_pct']:.1f}%` | RD:"
+                f" `{pm2['rating_deviation']:.1f}`"
+            )
 
-      res_cols = st.columns(2 if is_singles else 4)
-      for idx, pr in enumerate(sim_out["res"]):
-        with res_cols[idx]:
-          is_eff_rusted = pr["pre_rd"] > pr["stored_pre_rd"] + 0.05
-          rd_display = (
-              f"{pr['pre_rd']:.1f} (eff) ➔ {pr['post_rd']:.1f}"
-              if is_eff_rusted
-              else f"{pr['pre_rd']:.1f} ➔ {pr['post_rd']:.1f}"
-          )
+    with col_t2:
+        st.markdown("##### 🔴 Team B")
+        p3_pick = st.selectbox(
+            "Player B1 (Required)", ["-- Select --"] + list(p_dict.keys()), key="p3_sel"
+        )
+        if p3_pick != "-- Select --":
+            pm3 = p_dict[p3_pick]
+            st.caption(
+                f"**{format_pr_name(pm3['display_name'], pm3['is_provisional'])}**"
+                f" ({pm3['gender']}) | Display: `{pm3['display_rating']:.2f}` | LMMR:"
+                f" `{pm3['latent_mmr']:.3f}` | Acc:"
+                f" `{pm3['rating_accuracy_pct']:.1f}%` | RD:"
+                f" `{pm3['rating_deviation']:.1f}`"
+            )
+        p4_pick = (
+            st.selectbox(
+                "Player B2 (Teammate)",
+                ["-- Select --"] + list(p_dict.keys()),
+                key="p4_sel",
+            )
+            if not is_singles
+            else "-- None --"
+        )
+        if not is_singles and p4_pick not in ("-- Select --", "-- None --"):
+            pm4 = p_dict[p4_pick]
+            st.caption(
+                f"**{format_pr_name(pm4['display_name'], pm4['is_provisional'])}**"
+                f" ({pm4['gender']}) | Display: `{pm4['display_rating']:.2f}` | LMMR:"
+                f" `{pm4['latent_mmr']:.3f}` | Acc:"
+                f" `{pm4['rating_accuracy_pct']:.1f}%` | RD:"
+                f" `{pm4['rating_deviation']:.1f}`"
+            )
 
-          st.markdown(
-              f"""
-                    <div style="background-color: #1e293b; border: 2px solid #0284c7; border-radius: 8px; padding: 12px; margin-bottom: 8px; color: #f8fafc;">
-                        <h4 style="margin:0 0 8px 0; color:#38bdf8;">{pr['name']} <span style="font-size:0.8em; color:#94a3b8;">({pr.get('gender', 'M')})</span></h4>
-                        <div style="color: #cbd5e1; font-size: 0.9em; line-height: 1.6;">
-                            Pre MMR: <code style="color: #38bdf8; background: #0f172a;">{pr['pre_r']:.3f}</code><br/>
-                            Post MMR: <code style="color: #38bdf8; background: #0f172a;">{pr['post_r']:.3f}</code><br/>
-                            Delta: <span style="font-size:1.1em; font-weight:bold; color:{'#4ade80' if pr['delta']>=0 else '#f87171'}">{pr['delta']:+.4f}</span><br/>
-                            RD: <code style="color: #e2e8f0; background: #0f172a;">{rd_display}</code><br/>
-                            Acc: <code style="color: #e2e8f0; background: #0f172a;">{pr['pre_acc']:.1f}% ➔ {pr['acc']:.1f}%</code><br/>
-                            Tier: <span style="background: #0f172a; padding: 2px 6px; border-radius: 4px; font-weight: bold; color: #38bdf8;">{pr['pre_tier']} ➔ {pr['tier']}</span>
+    sel_f = f_dict[fmt_sel] if f_dict else None
+    sets_data, sa, sb, gw, gl = [], 0, 0, 0, 0
+
+    if sel_f:
+        cat = sel_f["category"]
+        if cat == "MULTI_SET":
+            is_b05 = sel_f["format_id"] == "STD_B05"
+            target_sets = 3 if is_b05 else 2
+
+            s1_c1, s1_c2 = st.columns(2)
+            s1a = s1_c1.number_input("Set 1: Team A", 0, 7, 6, key="s1a")
+            s1b = s1_c2.number_input("Set 1: Team B", 0, 7, 3, key="s1b")
+            sets_data.append((s1a, s1b))
+            s2_c1, s2_c2 = st.columns(2)
+            s2a = s2_c1.number_input("Set 2: Team A", 0, 7, 6, key="s2a")
+            s2b = s2_c2.number_input("Set 2: Team B", 0, 7, 4, key="s2b")
+            sets_data.append((s2a, s2b))
+
+            w_a = sum(1 for s in sets_data if s[0] > s[1])
+            w_b = sum(1 for s in sets_data if s[1] > s[0])
+
+            if max(w_a, w_b) < target_sets:
+                s3_c1, s3_c2 = st.columns(2)
+                s3a = s3_c1.number_input(
+                    "Set 3: Team A", 0, 7, 6 if w_b > w_a else 3, key="s3a"
+                )
+                s3b = s3_c2.number_input(
+                    "Set 3: Team B", 0, 7, 3 if w_b > w_a else 6, key="s3b"
+                )
+                sets_data.append((s3a, s3b))
+                w_a = sum(1 for s in sets_data if s[0] > s[1])
+                w_b = sum(1 for s in sets_data if s[1] > s[0])
+
+            if is_b05 and max(w_a, w_b) < target_sets:
+                s4_c1, s4_c2 = st.columns(2)
+                s4a = s4_c1.number_input(
+                    "Set 4: Team A", 0, 7, 6 if w_b > w_a else 4, key="s4a"
+                )
+                s4b = s4_c2.number_input(
+                    "Set 4: Team B", 0, 7, 4 if w_b > w_a else 6, key="s4b"
+                )
+                sets_data.append((s4a, s4b))
+                w_a = sum(1 for s in sets_data if s[0] > s[1])
+                w_b = sum(1 for s in sets_data if s[1] > s[0])
+
+            if is_b05 and max(w_a, w_b) < target_sets:
+                s5_c1, s5_c2 = st.columns(2)
+                s5a = s5_c1.number_input(
+                    "Set 5: Team A", 0, 7, 6 if w_b > w_a else 4, key="s5a"
+                )
+                s5b = s5_c2.number_input(
+                    "Set 5: Team B", 0, 7, 4 if w_b > w_a else 6, key="s5b"
+                )
+                sets_data.append((s5a, s5b))
+                w_a = sum(1 for s in sets_data if s[0] > s[1])
+                w_b = sum(1 for s in sets_data if s[1] > s[0])
+
+            sa, sb = w_a, w_b
+            gw, gl = sum(x[0] for x in sets_data), sum(x[1] for x in sets_data)
+
+        elif cat == "RACE_GAMES":
+            rg1, rg2 = st.columns(2)
+            tg = sel_f["target_games"] or 6
+            gw = rg1.number_input("Team A Games", 0, 30, tg)
+            gl = rg2.number_input("Team B Games", 0, 30, max(0, tg - 2))
+            sa, sb = gw, gl
+            sets_data.append((gw, gl))
+
+        elif cat in ("AMERICANO", "MEXICANO"):
+            tp = sel_f["total_points"] or 24
+            ap1, ap2 = st.columns(2)
+            sa = ap1.number_input("Team A Points", 0, tp, tp // 2)
+            sb = ap2.number_input("Team B Points", 0, tp, tp - (tp // 2))
+            gw, gl = sa, sb
+            sets_data.append((sa, sb))
+
+    btn_dry, btn_save = st.columns(2)
+    do_dry = btn_dry.button(
+        "🔬 Execute Dry Run Simulation", use_container_width=True
+    )
+    do_save = btn_save.button(
+        "💾 Commit Match to Database", type="primary", use_container_width=True
+    )
+
+    if do_dry or do_save:
+        is_valid_score, score_err = validate_format_score(
+            sel_f["format_id"], sets_data, gw, gl, sa, sb, fid_map
+        )
+
+        if (
+            p1_pick == "-- Select --"
+            or p3_pick == "-- Select --"
+            or (not is_singles and (p2_pick == "-- Select --" or p4_pick == "-- Select --"))
+        ):
+            st.error("Assign all required roster slots.")
+        elif not is_valid_score:
+            st.error(f"❌ Invalid Scoreline: {score_err}")
+        else:
+            p1_obj, p3_obj = dict(p_dict[p1_pick]), dict(p_dict[p3_pick])
+            p2_obj = dict(p_dict[p2_pick]) if not is_singles else None
+            p4_obj = dict(p_dict[p4_pick]) if not is_singles else None
+            ven_obj = dict(v_dict[ven_sel])
+            match_ts_val = f"{match_date}T{match_time.strftime('%H:%M:%S')}Z"
+
+            sim_out = RyftV16.compute_match(
+                p1_obj,
+                p2_obj,
+                p3_obj,
+                p4_obj,
+                sa,
+                sb,
+                max(gw, gl),
+                min(gw, gl),
+                sel_f["format_id"],
+                ven_obj["venue_id"],
+                is_singles,
+                is_dry=do_dry,
+                is_tournament=is_tourney,
+                match_timestamp=match_ts_val,
+            )
+            st.success(
+                f"Match Executed! Team A Odds: {sim_out['ea']*100:.1f}% vs Team B:"
+                f" {(1-sim_out['ea'])*100:.1f}% | Margin: {sim_out['mov']:.4f}"
+            )
+
+            res_cols = st.columns(2 if is_singles else 4)
+            for idx, pr in enumerate(sim_out["res"]):
+                with res_cols[idx]:
+                    is_eff_rusted = pr["pre_rd"] > pr["stored_pre_rd"] + 0.05
+                    rd_display = (
+                        f"{pr['pre_rd']:.1f} (eff) ➔ {pr['post_rd']:.1f}"
+                        if is_eff_rusted
+                        else f"{pr['pre_rd']:.1f} ➔ {pr['post_rd']:.1f}"
+                    )
+
+                    st.markdown(
+                        f"""
+                        <div style="background-color: #1e293b; border: 2px solid #0284c7; border-radius: 8px; padding: 12px; margin-bottom: 8px; color: #f8fafc;">
+                            <h4 style="margin:0 0 8px 0; color:#38bdf8;">{pr['name']} <span style="font-size:0.8em; color:#94a3b8;">({pr.get('gender', 'M')})</span></h4>
+                            <div style="color: #cbd5e1; font-size: 0.9em; line-height: 1.6;">
+                                Pre MMR: <code style="color: #38bdf8; background: #0f172a;">{pr['pre_r']:.3f}</code><br/>
+                                Post MMR: <code style="color: #38bdf8; background: #0f172a;">{pr['post_r']:.3f}</code><br/>
+                                Delta: <span style="font-size:1.1em; font-weight:bold; color:{'#4ade80' if pr['delta']>=0 else '#f87171'}">{pr['delta']:+.4f}</span><br/>
+                                RD: <code style="color: #e2e8f0; background: #0f172a;">{rd_display}</code><br/>
+                                Acc: <code style="color: #e2e8f0; background: #0f172a;">{pr['pre_acc']:.1f}% ➔ {pr['acc']:.1f}%</code><br/>
+                                Tier: <span style="background: #0f172a; padding: 2px 6px; border-radius: 4px; font-weight: bold; color: #38bdf8;">{pr['pre_tier']} ➔ {pr['tier']}</span>
+                            </div>
                         </div>
-                    </div>
-                    """,
-              unsafe_allow_html=True,
-          )
-          if pr["flags"]:
-            st.caption("⚡ " + " | ".join(pr["flags"]))
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                    if pr["flags"]:
+                        st.caption("⚡ " + " | ".join(pr["flags"]))
 
-      if do_save:
-        conn = get_db_connection()
-        try:
-          m_id = (
-              f"M_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-          )
-          match_dt = datetime.combine(match_date, match_time)
-          ts = match_dt.isoformat()
+            if do_save:
+                conn = get_db_connection()
+                try:
+                    m_id = (
+                        f"M_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+                    )
+                    match_dt = datetime.combine(match_date, match_time)
+                    ts = match_dt.isoformat()
 
-          ven_city = ven_obj.get("city_id")
-          ven_country = ven_obj.get("country_code")
+                    ven_city = ven_obj.get("city_id")
+                    ven_country = ven_obj.get("country_code")
 
-          is_venue_bridge = 0
-          is_city_bridge = 0
-          is_country_bridge = 0
+                    is_venue_bridge = 0
+                    is_city_bridge = 0
+                    is_country_bridge = 0
 
-          all_players = [p1_obj, p3_obj] + (
-              [p2_obj, p4_obj] if not is_singles else []
-          )
-          for p in all_players:
-            if p:
-              p_c = p.get("home_city_id")
-              p_co = p.get("home_country_code")
-              p_v = p.get("home_venue_id")
+                    all_players = [p1_obj, p3_obj] + (
+                        [p2_obj, p4_obj] if not is_singles else []
+                    )
+                    for p in all_players:
+                        if p:
+                            p_c = p.get("home_city_id")
+                            p_co = p.get("home_country_code")
+                            p_v = p.get("home_venue_id")
 
-              if p_co and ven_country and p_co != ven_country:
-                is_country_bridge = 1
-              if p_c and ven_city and p_c != ven_city:
-                is_city_bridge = 1
-              if p_v and p_v != ven_obj["venue_id"] and p_c == ven_city:
-                is_venue_bridge = 1
+                            if p_co and ven_country and p_co != ven_country:
+                                is_country_bridge = 1
+                            if p_c and ven_city and p_c != ven_city:
+                                is_city_bridge = 1
+                            if p_v and p_v != ven_obj["venue_id"] and p_c == ven_city:
+                                is_venue_bridge = 1
 
-          all_guardrails = []
-          for pr in sim_out["res"]:
-            all_guardrails.extend(pr.get("flags", []))
+                    all_guardrails = []
+                    for pr in sim_out["res"]:
+                        all_guardrails.extend(pr.get("flags", []))
 
-          is_retro = (
-              1 if "[ALERT_RETROACTIVE_ATTESTATION]" in all_guardrails else 0
-          )
+                    is_retro = (
+                        1 if "[ALERT_RETROACTIVE_ATTESTATION]" in all_guardrails else 0
+                    )
 
-          conn.execute(
-              """
+                    conn.execute(
+                        """
                         INSERT INTO matches (
                             match_id, venue_id, format_id, is_singles, is_tournament,
                             is_venue_bridge, is_city_bridge, is_country_bridge,
@@ -3574,43 +2612,43 @@ elif nav == "🎾 Log Matches":
                             pre_rating_a, pre_rating_b, win_expectancy_a, applied_m_c, applied_s_margin,
                             delta_r_p1, delta_r_p2, delta_r_p3, delta_r_p4, guardrails_summary, is_retroactive, match_timestamp
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-              (
-                  m_id,
-                  ven_obj["venue_id"],
-                  sel_f["format_id"],
-                  1 if is_singles else 0,
-                  1 if is_tourney else 0,
-                  is_venue_bridge,
-                  is_city_bridge,
-                  is_country_bridge,
-                  p1_obj["player_id"],
-                  p2_obj["player_id"] if not is_singles else None,
-                  p3_obj["player_id"],
-                  p4_obj["player_id"] if not is_singles else None,
-                  sa,
-                  sb,
-                  json.dumps(sets_data),
-                  max(gw, gl),
-                  min(gw, gl),
-                  sim_out["ta_r"],
-                  sim_out["tb_r"],
-                  sim_out["ea"],
-                  sim_out.get("applied_m_c", sel_f.get("mc_weight", 1.0)),
-                  sim_out.get("mov", 1.0),
-                  sim_out["res"][0]["delta"],
-                  sim_out["res"][2]["delta"] if not is_singles else 0.0,
-                  sim_out["res"][1]["delta"],
-                  sim_out["res"][3]["delta"] if not is_singles else 0.0,
-                  json.dumps(all_guardrails),
-                  is_retro,
-                  ts,
-              ),
-          )
+                        """,
+                        (
+                            m_id,
+                            ven_obj["venue_id"],
+                            sel_f["format_id"],
+                            1 if is_singles else 0,
+                            1 if is_tourney else 0,
+                            is_venue_bridge,
+                            is_city_bridge,
+                            is_country_bridge,
+                            p1_obj["player_id"],
+                            p2_obj["player_id"] if not is_singles else None,
+                            p3_obj["player_id"],
+                            p4_obj["player_id"] if not is_singles else None,
+                            sa,
+                            sb,
+                            json.dumps(sets_data),
+                            max(gw, gl),
+                            min(gw, gl),
+                            sim_out["ta_r"],
+                            sim_out["tb_r"],
+                            sim_out["ea"],
+                            sim_out.get("applied_m_c", sel_f.get("mc_weight", 1.0)),
+                            sim_out.get("mov", 1.0),
+                            sim_out["res"][0]["delta"],
+                            sim_out["res"][2]["delta"] if not is_singles else 0.0,
+                            sim_out["res"][1]["delta"],
+                            sim_out["res"][3]["delta"] if not is_singles else 0.0,
+                            json.dumps(all_guardrails),
+                            is_retro,
+                            ts,
+                        ),
+                    )
 
-          for pr in sim_out["res"]:
-            conn.execute(
-                """
+                    for pr in sim_out["res"]:
+                        conn.execute(
+                            """
                             UPDATE players SET 
                                 latent_mmr = ?, display_rating = ?, rating_deviation = ?, 
                                 rating_accuracy_pct = ?, accuracy_s_rd = ?, accuracy_s_matches = ?, 
@@ -3621,91 +2659,92 @@ elif nav == "🎾 Log Matches":
                                 rolling_365d_peak = max(rolling_365d_peak, ?), 
                                 last_match_time = ? 
                             WHERE player_id = ?
-                        """,
-                (
-                    pr["post_r"],
-                    pr["post_disp"],
-                    pr["post_rd"],
-                    pr["acc"],
-                    pr.get("a_rd", 0.0),
-                    pr.get("a_m", 0.0),
-                    pr.get("a_d", 0.0),
-                    pr["tier"],
-                    pr["prov"],
-                    pr["c_loss"],
-                    pr["post_r"],
-                    pr["post_r"],
-                    pr["post_r"],
-                    ts,
-                    pr["pid"],
-                ),
-            )
+                            """,
+                            (
+                                pr["post_r"],
+                                pr["post_disp"],
+                                pr["post_rd"],
+                                pr["acc"],
+                                pr.get("a_rd", 0.0),
+                                pr.get("a_m", 0.0),
+                                pr.get("a_d", 0.0),
+                                pr["tier"],
+                                pr["prov"],
+                                pr["c_loss"],
+                                pr["post_r"],
+                                pr["post_r"],
+                                pr["post_r"],
+                                ts,
+                                pr["pid"],
+                            ),
+                        )
 
-            conn.execute(
-                """
+                        conn.execute(
+                            """
                             INSERT INTO match_logs (
                                 log_id, match_id, player_id, pre_latent_mmr, post_latent_mmr, 
                                 pre_display_rating, post_display_rating, pre_rd, post_rd, 
                                 pre_accuracy_pct, post_accuracy_pct, delta_r, is_retroactive, guardrails_triggered, logged_at
                             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                (
-                    f"L_{pr['pid']}_{m_id}",
-                    m_id,
-                    pr["pid"],
-                    pr["pre_r"],
-                    pr["post_r"],
-                    pr["pre_disp"],
-                    pr["post_disp"],
-                    pr["pre_rd"],
-                    pr["post_rd"],
-                    pr["pre_acc"],
-                    pr["acc"],
-                    pr["delta"],
-                    is_retro,
-                    json.dumps(pr.get("flags", [])),
-                    ts,
-                ),
-            )
+                            """,
+                            (
+                                f"L_{pr['pid']}_{m_id}",
+                                m_id,
+                                pr["pid"],
+                                pr["pre_r"],
+                                pr["post_r"],
+                                pr["pre_disp"],
+                                pr["post_disp"],
+                                pr["pre_rd"],
+                                pr["post_rd"],
+                                pr["pre_acc"],
+                                pr["acc"],
+                                pr["delta"],
+                                is_retro,
+                                json.dumps(pr.get("flags", [])),
+                                ts,
+                            ),
+                        )
 
-          conn.execute(
-              "UPDATE venues SET total_matches_played = total_matches_played +"
-              " 1 WHERE venue_id = ?",
-              (ven_obj["venue_id"],),
-          )
-          if is_city_bridge:
-            conn.execute(
-                "UPDATE venues SET city_bridge_matches_count ="
-                " city_bridge_matches_count + 1 WHERE venue_id = ?",
-                (ven_obj["venue_id"],),
-            )
-          if is_country_bridge:
-            conn.execute(
-                "UPDATE venues SET country_bridge_matches_count ="
-                " country_bridge_matches_count + 1 WHERE venue_id = ?",
-                (ven_obj["venue_id"],),
-            )
-          conn.execute(
-              "UPDATE locations SET total_matches_played = total_matches_played"
-              " + 1 WHERE location_id = ?",
-              (ven_obj["city_id"],),
-          )
+                    conn.execute(
+                        "UPDATE venues SET total_matches_played = total_matches_played +"
+                        " 1 WHERE venue_id = ?",
+                        (ven_obj["venue_id"],),
+                    )
+                    if is_city_bridge:
+                        conn.execute(
+                            "UPDATE venues SET city_bridge_matches_count ="
+                            " city_bridge_matches_count + 1 WHERE venue_id = ?",
+                            (ven_obj["venue_id"],),
+                        )
+                    if is_country_bridge:
+                        conn.execute(
+                            "UPDATE venues SET country_bridge_matches_count ="
+                            " country_bridge_matches_count + 1 WHERE venue_id = ?",
+                            (ven_obj["venue_id"],),
+                        )
+                    conn.execute(
+                        "UPDATE locations SET total_matches_played = total_matches_played"
+                        " + 1 WHERE location_id = ?",
+                        (ven_obj["city_id"],),
+                    )
 
-          for p in all_players:
-            if p and p.get("player_id"):
-              RyftV16.sync_player_aggregates(p["player_id"], conn=conn)
+                    for p in all_players:
+                        if p and p.get("player_id"):
+                            RyftV16.sync_player_aggregates(p["player_id"], conn=conn)
 
-          conn.commit()
-          st.balloons()
-          st.success("✅ Match successfully committed to database ledger!")
-          st.rerun()
+                    conn.commit()
+                    st.balloons()
+                    st.success("✅ Match successfully committed to database ledger!")
+                    st.rerun()
 
-        except Exception as e:
-          conn.rollback()
-          st.error(f"Commit Failed: {str(e)}")
-          raise e
-        finally:
-          conn.close()
+                except Exception as e:
+                    conn.rollback()
+                    st.error(f"Commit Failed: {str(e)}")
+                    raise e
+                finally:
+                    conn.close()
+
 elif nav == "🗓️ Club Sessions & Mixers":
     st.title("Sessions & Event Traffic Controller")
     st.info("Please use the upgraded **🧠 Session Logic (V16.2 PROD)** tab for multi-group stage management.")
@@ -3714,32 +2753,6 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
     st.title("Session Logic Engine (V16.2 PROD)")
     st.markdown(f"#### `{format_ist_banner()}`")
     st.caption("Multi-stage atomic scheduling, Americano cycles, sit-out management, and Mexicano phase-gating.")
-
-    def _generate_mexicano_round(standings_sorted_pids, court_picks, current_round, start_match_order):
-        fixtures = []
-        fixture_order = start_match_order
-        num_courts = max(1, len(court_picks))
-        max_courts = max(1, min(num_courts, len(standings_sorted_pids) // 4))
-        court_pool = list(standings_sorted_pids[: (max_courts * 4)])
-
-        for c_idx in range(max_courts):
-            if len(court_pool) < 4:
-                break
-            m_players, court_pool = court_pool[:4], court_pool[4:]
-            fixtures.append({
-                "round_number": current_round,
-                "court_id": court_picks[c_idx % num_courts],
-                "match_order": fixture_order,
-                "team_a_p1_id": m_players[0],
-                "team_a_p2_id": m_players[3],
-                "team_b_p1_id": m_players[1],
-                "team_b_p2_id": m_players[2],
-                "group_id": "A"
-            })
-            fixture_order += 1
-        return fixtures
-
-    SessionLogicEngine.generate_mexicano_round = staticmethod(_generate_mexicano_round)
 
     conn = get_db_connection()
     venues = conn.execute("SELECT venue_id, venue_name, court_count, city_id, country_code FROM venues WHERE is_active = 1").fetchall()
@@ -3876,7 +2889,6 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
         def render_session_workspace(s_data):
             s_id = s_data["session_id"]
             enrolled_ids = json.loads(s_data["enrolled_player_ids"])
-            crts = json.loads(s_data["court_ids_json"])
             id_to_name = {p["player_id"]: format_pr_name(p["display_name"], p["is_provisional"]) for p in players}
             fmt_info = conn.execute("SELECT category, target_games, total_points, format_name FROM match_formats WHERE format_id = ?", (s_data["format_id"],)).fetchone()
             fmt_category = fmt_info["category"] if fmt_info else s_data.get("fmt_cat", "RACE_GAMES")
@@ -3886,7 +2898,7 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
             hdr1, hdr2 = st.columns([4, 1])
             hdr1.markdown(f"""<div style="background-color: #f8fafc; padding: 12px; border-radius: 8px; border-left: 5px solid #0284c7; margin-bottom:12px;"><h3 style="margin:0; color:#0f172a;">{s_data['session_title']}</h3><strong>Format:</strong> {s_data['format_name']} | <strong>Mode:</strong> {s_data['team_format']} | <strong>Rounds Scheduled:</strong> {s_data['total_rounds']} | <strong>Tournament:</strong> {'YES' if s_data.get('is_tournament', 0) else 'NO'}</div>""", unsafe_allow_html=True)
             with hdr2:
-                if st.button("🗑️️ Discard", key=f"disc_{s_id}"):
+                if st.button("🗑 Discard", key=f"disc_{s_id}"):
                     conn.execute("DELETE FROM session_rosters WHERE session_id = ?", (s_id,))
                     conn.execute("DELETE FROM session_matches WHERE session_id = ?", (s_id,))
                     conn.execute("DELETE FROM sessions WHERE session_id = ?", (s_id,))
@@ -3987,6 +2999,7 @@ elif nav == "🧠 Session Logic (V16.2 PROD)":
 
             elif sub_nav == "📊 Standings & Atomic Commit":
                 st.subheader("Event Standings & Final Engine Commit")
+                st.caption("Review completed scores and standings before final engine commit.")
                 staged_matches = conn.execute("SELECT * FROM session_matches WHERE session_id = ? AND match_status = 'STAGED' ORDER BY match_order ASC", (s_id,)).fetchall()
 
                 standings = {}
@@ -4232,9 +3245,8 @@ elif nav == "🏆 Tournament Desk (Delayed)":
                 st.success("✅ Tournament batch committed!")
                 st.rerun()
     conn.close()
-
 # ==============================================================================
-# 📜 HISTORICAL MATCHES (ERRORS 2 & 3 FULLY RESOLVED)
+# 📜 HISTORICAL MATCHES (3-PANEL AUDIT & HAWKING SYNC LEDGER)
 # ==============================================================================
 elif nav == "📜 Historical Matches":
     st.title("Historical Matches & Deep Algorithmic Audit Ledger")
@@ -4424,7 +3436,6 @@ elif nav == "📜 Historical Matches":
             team_a_str = f"{p1_lbl} & {p2_lbl}" if (not m["is_singles"] and p2_lbl) else p1_lbl
             team_b_str = f"{p3_lbl} & {p4_lbl}" if (not m["is_singles"] and p4_lbl) else p3_lbl
 
-            # ERROR 2 RESOLVED: Formatted Actual Game Score (e.g. 6-4 or 6-2, 4-6, 7-6)
             actual_scoreline = format_match_scoreline(dict(m))
 
             session_badge = f"🗓️ Session: {m['session_title'] or m['session_id']}" if m["session_id"] else "⚡ Standalone"
@@ -4435,12 +3446,9 @@ elif nav == "📜 Historical Matches":
             if m["is_city_bridge"]: bridge_badge = "🏙️ City Bridge"
             if m["is_country_bridge"]: bridge_badge = "🌍 Country Bridge"
 
-            # ERROR 2 RESOLVED: Header displays Players and Actual Score
             exp_header = f"🎾 {m['match_timestamp'][:10]} | {m['venue_name']} | {team_a_str} ({actual_scoreline}) {team_b_str} [{m['format_name']}] — {session_badge} [{bridge_badge}]"
 
             with st.expander(exp_header):
-                # ERROR 3 RESOLVED: Three Separated Structured Panels
-
                 # PANEL 1: PRE-MATCH BALANCE & ODDS
                 st.markdown("##### ⚖️ Panel 1: Pre-Match Balance & Win Expectancy")
                 pm1, pm2, pm3, pm4 = st.columns(4)
@@ -4505,7 +3513,7 @@ elif nav == "📜 Historical Matches":
     conn.close()
 
 # ==============================================================================
-# 👥 PLAYER ROSTER & CALIBRATION (GENDER & DEMOGRAPHIC REFACTORING)
+# 👥 PLAYER ROSTER & CALIBRATION
 # ==============================================================================
 elif nav == "👥 Player Roster & Calibration":
     st.title("Players Directory & Calibration Roster")
@@ -4538,7 +3546,6 @@ elif nav == "👥 Player Roster & Calibration":
             p_gender = st.selectbox("Demographic Division (Gender)", ["MALE", "FEMALE"], key="reg_p_gender")
             p_dob = st.date_input("Date of Birth", value=date(1995, 1, 1), key="reg_p_dob")
 
-            # Gender-Aware Base Categories
             if p_gender == "FEMALE":
                 in_cats = ["Beginner (0.500)", "Beginner+ (1.000)", "Intermediate (1.750)", "Intermediate+ (2.750)", "Advanced (3.500)", "Pro (4.500)", "Elite (5.500)"]
             else:
@@ -4650,7 +3657,7 @@ elif nav == "👥 Player Roster & Calibration":
     conn.close()
 
 # ==============================================================================
-# 🏢 VENUES & REGIONS (ERROR 1 CARTESIAN FANOUT BUG FIXED)
+# 🏢 VENUES & REGIONS (DECOUPLED AGGREGATIONS)
 # ==============================================================================
 elif nav == "🏢 Venues & Regions":
     st.title("Geographical Ecosystem & Regional Drill-Downs")
@@ -4712,7 +3719,7 @@ elif nav == "🏢 Venues & Regions":
     view_mode = st.radio("Inspect Hierarchy By:", ["Countries", "Cities", "Venues"], horizontal=True)
 
     # --------------------------------------------------------------------------
-    # COUNTRIES SUB-TAB (ERROR 1 FIXED: Decoupled Subquery Aggregation)
+    # COUNTRIES SUB-TAB (Decoupled Subqueries)
     # --------------------------------------------------------------------------
     if view_mode == "Countries":
         co_query = """
@@ -4761,7 +3768,7 @@ elif nav == "🏢 Venues & Regions":
                 s4.metric("Country Bridges", co["country_bridges"])
 
     # --------------------------------------------------------------------------
-    # CITIES SUB-TAB (ERROR 1 FIXED: Decoupled Subquery Aggregation)
+    # CITIES SUB-TAB (Decoupled Subqueries)
     # --------------------------------------------------------------------------
     elif view_mode == "Cities":
         all_countries = conn.execute("SELECT location_id, location_name, country_code FROM locations WHERE location_type = 'COUNTRY' AND is_active = 1 ORDER BY location_name").fetchall()
@@ -4819,7 +3826,7 @@ elif nav == "🏢 Venues & Regions":
                 c_sub4.metric("Hawking Offset", f"{ci['hawking_offset']:+.4f}")
 
     # --------------------------------------------------------------------------
-    # VENUES SUB-TAB (Cascading Country -> City -> Venue)
+    # VENUES SUB-TAB (Cascading Hierarchy)
     # --------------------------------------------------------------------------
     elif view_mode == "Venues":
         all_countries = conn.execute("SELECT location_id, location_name, country_code FROM locations WHERE location_type = 'COUNTRY' AND is_active = 1 ORDER BY location_name").fetchall()
@@ -4882,7 +3889,7 @@ elif nav == "🏢 Venues & Regions":
     conn.close()
 
 # ==============================================================================
-# 🌐 TAB: HAWKING MACRO ENGINE (PURE EMPIRICAL TOPOLOGY & PARAMETERIZED AUDIT)
+# 🌐 HAWKING MACRO ENGINE (PURE EMPIRICAL TOPOLOGY & PARAMETERIZED AUDIT)
 # ==============================================================================
 elif nav == "🌐 Hawking Engine":
     st.title("🌐 Hawking Macro Normalization & Regional Diffusion")
@@ -4909,7 +3916,6 @@ elif nav == "🌐 Hawking Engine":
 
     st.markdown("---")
 
-    # Pure Empirical Tabs: Synthetic Ghosts completely removed!
     h_tab1, h_tab2, h_tab3, h_tab4 = st.tabs([
         "🌍 Country & Municipal Hierarchy",
         "⚔️ Cross-Region Parity Analyzer",
@@ -5261,7 +4267,7 @@ elif nav == "🌐 Hawking Engine":
             st.dataframe(df_disc, use_container_width=True)
 
             st.download_button(
-                "⬇️️ Export Disconnected Players List (CSV)",
+                "⬇ Export Disconnected Players List (CSV)",
                 data=df_disc.to_csv(index=False),
                 file_name=f"Disconnected_Players_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                 mime="text/csv"
@@ -5286,7 +4292,7 @@ elif nav == "🌐 Hawking Engine":
     conn.close()
 
 # ==============================================================================
-# ⚙️ GLOBAL CONFIG (CHAINED DISCRETE .999 DEMOGRAPHIC TIERS & UNIVERSAL FORMATS)
+# ⚙️ GLOBAL CONFIG (DISCRETE .999 DEMOGRAPHIC TIERS & FORMATS)
 # ==============================================================================
 elif nav == "⚙️ Global Config":
     st.title("Parameter Matrix & Rule Controller")
@@ -5334,13 +4340,11 @@ elif nav == "⚙️ Global Config":
         st.markdown("### 🏆 Demographic Rating Categories & Boundaries")
         st.caption("Customize skill thresholds and progression multipliers separately for Men and Women without altering the unified mathematical continuum. Boundaries are discrete: Beginner reaches 0.999; achieving 1.000 promotes the player to Beginner+.")
 
-        # STRICT GENDER SELECTION (Prefix matching eliminates 'MALE in FEMALE' bug)
         g_select = st.radio("Select Demographic Group to Configure", ["MALE (Men's Divisions)", "FEMALE (Women's Divisions)"], horizontal=True)
         active_gender = "FEMALE" if g_select.startswith("FEMALE") else "MALE"
 
         cats_data = conn.execute("SELECT * FROM rating_categories WHERE gender = ? ORDER BY sort_order ASC", (active_gender,)).fetchall()
 
-        # Schema & Data Fallback: Guarantee 7 categories exist for the selected gender
         if not cats_data or len(cats_data) < 7:
             if active_gender == "FEMALE":
                 defaults = [
@@ -5369,7 +4373,6 @@ elif nav == "⚙️ Global Config":
             conn.commit()
             cats_data = conn.execute("SELECT * FROM rating_categories WHERE gender = ? ORDER BY sort_order ASC", (active_gender,)).fetchall()
 
-        # Session state key strictly isolated per gender
         cutoff_key = f"cutoffs_{active_gender}"
         if cutoff_key not in st.session_state or len(st.session_state[cutoff_key]) != 6:
             st.session_state[cutoff_key] = [float(cats_data[i]["max_rating"]) for i in range(len(cats_data) - 1)]
@@ -5458,7 +4461,7 @@ elif nav == "⚙️ Global Config":
                 st.success(f"✅ {active_gender} Categories Saved & Applied Everywhere! ({len(players_to_sync)} player badges refreshed)")
                 st.rerun()
 
-        # UNIVERSAL PLATFORM FORMATS (Completely independent of gender selection)
+        # UNIVERSAL PLATFORM FORMATS
         st.markdown("---")
         st.markdown("### 🎾 Universal Official Match Formats & Confidence Multipliers ($M_C$)")
         st.caption("Universal platform confidence weights applied equally to Men's, Women's, and Mixed divisions across all formats.")
@@ -5487,6 +4490,9 @@ elif nav == "⚙️ Global Config":
         render_params_by_group(df, ["1. Core Bounds & Drag", "6. Uncertainty & Rust", "8. Hawking Macro"])
     conn.close()
 
+# ==============================================================================
+# 📄 RYFT DOCUMENTATION
+# ==============================================================================
 elif nav == "📄 RYFT Documentation":
     st.title("RYFT Engine V.16.4 — Master Specification Document")
     if REPORTLAB_AVAILABLE:
